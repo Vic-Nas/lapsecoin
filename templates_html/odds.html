@@ -48,8 +48,11 @@
     <line x1="{{ chart.points[0].x if chart.points else 0 }}" y1="{{ chart.plot_bottom }}"
           x2="{{ chart.width }}" y2="{{ chart.plot_bottom }}" stroke="var(--rule)" stroke-width="1"/>
 
-    <text x="4" y="{{ chart.plot_top + 4 }}" font-size="10" fill="var(--ink-dim)">{{ "%.0f"|format(chart.axis_hi) }}s+</text>
-    <text x="4" y="{{ chart.plot_bottom }}" font-size="10" fill="var(--ink-dim)">{{ "%.0f"|format(chart.axis_lo) }}s-</text>
+    {% for t in chart.ticks %}
+    <line x1="{{ chart.points[0].x if chart.points else 0 }}" y1="{{ t.y }}"
+          x2="{{ chart.width }}" y2="{{ t.y }}" stroke="var(--rule-lt)" stroke-width="0.5" opacity="0.6"/>
+    <text x="4" y="{{ t.y + 3 }}" font-size="10" fill="var(--ink-dim)">{{ "%.0f"|format(t.value) }}s</text>
+    {% endfor %}
 
     <line x1="{{ chart.points[0].x if chart.points else 0 }}" y1="{{ chart.median_y }}"
           x2="{{ chart.width }}" y2="{{ chart.median_y }}"
@@ -81,10 +84,11 @@
     Height is a proxy for the winning builder's real build time: every builder starts its VDF
     at roughly the same moment, and a block's timestamp is stamped the instant its builder
     finishes, so this is (start delay + build time), not the literal number. The vertical axis
-    is zoomed to 0.5x-2x the window's median so ordinary variation is visible; hollow points
-    are pinned to the top/bottom edge because their real value falls outside that range
-    (hover for the exact number). They're excluded from the odds figure above but still
-    plotted, nothing is dropped from the chart itself.
+    is scaled to the actual data range so ordinary variation is visible, rather than a fixed
+    scale a single spike would flatten; hollow points are pinned to the top/bottom edge
+    because their real value falls outside that range (hover for the exact number). They're
+    excluded from the odds figure above but still plotted, nothing is dropped from the chart
+    itself.
   </p>
 </div>
 {% endif %}

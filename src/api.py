@@ -328,26 +328,41 @@ _CHART_W, _CHART_H = 860, 220
 _CHART_PAD_L, _CHART_PAD_T, _CHART_PAD_B = 46, 10, 22
 
 
+_TICK_COUNT = 5  # labeled horizontal gridlines, evenly spaced across the axis
+
+
 def _race_chart(race):
     """Precompute SVG pixel geometry for the race-odds chart, so the
     template only has to place already-computed points.
 
-    The y-axis is zoomed to the outlier band itself (median/2 to median*2)
-    rather than stretched to whatever the tallest spike in the window is --
-    a single 280s outlier used to flatten a chart where everything else
-    sits in a 60-120s range into an unreadable line along the bottom.
-    Points outside the band (already excluded from the odds figure) are
-    clipped to the plot's top/bottom edge instead, with a hollow marker and
-    a tooltip carrying the real value -- visible as "off the chart", not
-    hidden, but not allowed to compress everything else either.
+    The y-axis hugs the actual in-band data range (plus a small margin),
+    not a fixed formula -- otherwise the axis can sit far below the real
+    minimum and leave a dead gap between the plotted line and the x-axis
+    for no reason. Points outside that range (already excluded from the
+    odds figure, per the median/2-median*2 band) clip to the plot's
+    top/bottom edge instead, with a hollow marker and a tooltip carrying
+    the real value: visible as "off the chart", not hidden, but not
+    allowed to stretch the axis and flatten everything else either.
+
+    A handful of labeled gridlines (_TICK_COUNT, evenly spaced across the
+    axis) are computed here too, so the chart has more than just a top and
+    bottom number to compare a point against.
     """
     rows = race["window"]
     n = len(rows)
     plot_w = _CHART_W - _CHART_PAD_L
     plot_h = _CHART_H - _CHART_PAD_T - _CHART_PAD_B
     median = race["median"]
-    axis_lo, axis_hi = median / 2, median * 2
     own_seconds = race["own_seconds"]
+
+    in_band_values = [s for _, s, ok in rows if ok]
+    domain = list(in_band_values) or [s for _, s, _ in rows]
+    if own_seconds is not None:
+        domain.append(own_seconds)
+    data_lo, data_hi = min(domain), max(domain)
+    margin = max((data_hi - data_lo) * 0.08, 1.0)
+    axis_lo = max(0.0, data_lo - margin)
+    axis_hi = data_hi + margin
 
     def x_at(idx):
         return _CHART_PAD_L + (idx / max(n - 1, 1)) * plot_w
@@ -367,8 +382,12 @@ def _race_chart(race):
         own_y = round(y_at(own_seconds), 1)
         own_clipped = own_seconds > axis_hi or own_seconds < axis_lo
 
+    ticks = [{"value": axis_lo + i * (axis_hi - axis_lo) / (_TICK_COUNT - 1),
+              "y": round(y_at(axis_lo + i * (axis_hi - axis_lo) / (_TICK_COUNT - 1)), 1)}
+             for i in range(_TICK_COUNT)]
+
     return {"points": points, "own_y": own_y, "own_clipped": own_clipped,
-            "median_y": round(y_at(median), 1),
+            "median_y": round(y_at(median), 1), "ticks": ticks,
             "width": _CHART_W, "height": _CHART_H,
             "plot_top": _CHART_PAD_T, "plot_bottom": _CHART_PAD_T + plot_h,
             "axis_lo": axis_lo, "axis_hi": axis_hi}
