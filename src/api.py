@@ -640,6 +640,17 @@ def _shared_read_only_routes(app, node, pool, limiter,
 
     # ---- JSON API (read-only) --------------------------------------------
 
+    @app.route("/api/odds", endpoint=pfx+"api_odds")
+    def api_odds():
+        race = block_mod.race_odds(node.view.chain, node.own_vdf_median())
+        if not race:
+            return jsonify(None)
+        return jsonify({
+            "median": race["median"], "excluded": race["excluded"],
+            "own_seconds": race["own_seconds"], "odds_pct": race["odds_pct"],
+            "window_len": len(race["window"]), "chart": _race_chart(race),
+        })
+
     @app.route("/api/peers", endpoint=pfx+"api_peers")
     def api_peers():
         all_rows = sorted(pool.snapshot(), key=lambda r: r[1], reverse=True)
