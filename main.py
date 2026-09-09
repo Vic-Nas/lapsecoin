@@ -19,6 +19,7 @@ import block as block_mod
 import crypto
 import http_probe
 import params
+import upnp
 from api import create_app, create_private_app
 from discovery import Discovery
 from gossip import Gossip
@@ -307,6 +308,9 @@ def main():
 
     threading.Thread(target=discovery.run, daemon=True).start()
     threading.Thread(target=http_probe.run, args=(pool,), daemon=True).start()
+    # Best-effort only: doesn't block startup, and the node works the same
+    # whether or not this succeeds (see upnp.py).
+    upnp.try_map_port(args.port)
 
     update_checker = UpdateChecker(
         local_version=LOCAL_VERSION,
