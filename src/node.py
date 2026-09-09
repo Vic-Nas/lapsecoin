@@ -15,6 +15,7 @@ sole writer; every mutation publishes a new snapshot atomically.
 """
 
 import collections
+import json
 import logging
 import queue
 import statistics
@@ -133,6 +134,7 @@ class Node:
         # numbers entirely. This is local, in-memory, per-node knowledge --
         # nothing else has it, so it can't be reconstructed from chain data.
         self._own_build_seconds = collections.deque(maxlen=30)
+        self._load_own_build_seconds()
 
         self.cs   = self._load_cs()
         self.view = NodeView(self.cs)
@@ -140,6 +142,25 @@ class Node:
     # ------------------------------------------------------------------
     # Startup
     # ------------------------------------------------------------------
+
+    _OWN_BUILD_SECONDS_META_KEY = "own_build_seconds"
+
+    def _load_own_build_seconds(self):
+        """Restore _own_build_seconds across restarts, so the odds page and
+        own_block_time_diff() don't sit empty for up to 30 cycles (an hour)
+        after every restart. Best-effort: any parse failure just starts
+        fresh, same as a node that's never built before."""
+        raw = self.storage.get_meta(self._OWN_BUILD_SECONDS_META_KEY)
+        if not raw:
+            return
+        try:
+            self._own_build_seconds.extend(json.loads(raw))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            log.warning("[startup] discarding unreadable own_build_seconds meta")
+
+    def _save_own_build_seconds(self):
+        self.storage.set_meta(self._OWN_BUILD_SECONDS_META_KEY,
+                              json.dumps(list(self._own_build_seconds)))
 
     def _load_cs(self):
         """Load or create ChainState from storage."""
@@ -372,6 +393,7 @@ class Node:
         log.info("[vdf] proof ready  height=%d  seconds=%.1f  iterations=%d",
                  cs.height + 1, vdf_seconds, iterations)
         self._own_build_seconds.append(vdf_seconds)
+        self._save_own_build_seconds()
 
         if self.cs is not cs:
             # A mid-wait sync check adopted a better chain out from under us.

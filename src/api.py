@@ -330,27 +330,48 @@ _CHART_PAD_L, _CHART_PAD_T, _CHART_PAD_B = 46, 10, 22
 
 def _race_chart(race):
     """Precompute SVG pixel geometry for the race-odds chart, so the
-    template only has to place already-computed points."""
+    template only has to place already-computed points.
+
+    The y-axis is zoomed to the outlier band itself (median/2 to median*2)
+    rather than stretched to whatever the tallest spike in the window is --
+    a single 280s outlier used to flatten a chart where everything else
+    sits in a 60-120s range into an unreadable line along the bottom.
+    Points outside the band (already excluded from the odds figure) are
+    clipped to the plot's top/bottom edge instead, with a hollow marker and
+    a tooltip carrying the real value -- visible as "off the chart", not
+    hidden, but not allowed to compress everything else either.
+    """
     rows = race["window"]
     n = len(rows)
     plot_w = _CHART_W - _CHART_PAD_L
     plot_h = _CHART_H - _CHART_PAD_T - _CHART_PAD_B
-    y_max = max([i for _, i, _ in rows] + [race["own_seconds"] or 0]) * 1.05 or 1.0
+    median = race["median"]
+    axis_lo, axis_hi = median / 2, median * 2
+    own_seconds = race["own_seconds"]
 
     def x_at(idx):
         return _CHART_PAD_L + (idx / max(n - 1, 1)) * plot_w
 
     def y_at(seconds):
-        return _CHART_PAD_T + plot_h - (seconds / y_max) * plot_h
+        clamped = min(max(seconds, axis_lo), axis_hi)
+        frac = (clamped - axis_lo) / (axis_hi - axis_lo)
+        return _CHART_PAD_T + plot_h - frac * plot_h
 
     points = [{"x": round(x_at(idx), 1), "y": round(y_at(seconds), 1),
-               "in_band": in_band, "height": h, "seconds": seconds}
+               "in_band": in_band, "height": h, "seconds": seconds,
+               "clipped_high": seconds > axis_hi, "clipped_low": seconds < axis_lo}
               for idx, (h, seconds, in_band) in enumerate(rows)]
-    own_y = round(y_at(race["own_seconds"]), 1) if race["own_seconds"] is not None else None
-    return {"points": points, "own_y": own_y,
+
+    own_y = own_clipped = None
+    if own_seconds is not None:
+        own_y = round(y_at(own_seconds), 1)
+        own_clipped = own_seconds > axis_hi or own_seconds < axis_lo
+
+    return {"points": points, "own_y": own_y, "own_clipped": own_clipped,
+            "median_y": round(y_at(median), 1),
             "width": _CHART_W, "height": _CHART_H,
             "plot_top": _CHART_PAD_T, "plot_bottom": _CHART_PAD_T + plot_h,
-            "y_max": y_max}
+            "axis_lo": axis_lo, "axis_hi": axis_hi}
 
 
 def _default_send_outputs(pool):

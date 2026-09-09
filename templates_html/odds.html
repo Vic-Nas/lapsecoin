@@ -48,24 +48,31 @@
     <line x1="{{ chart.points[0].x if chart.points else 0 }}" y1="{{ chart.plot_bottom }}"
           x2="{{ chart.width }}" y2="{{ chart.plot_bottom }}" stroke="var(--rule)" stroke-width="1"/>
 
-    <text x="4" y="{{ chart.plot_top + 4 }}" font-size="10" fill="var(--ink-dim)">{{ "%.0f"|format(chart.y_max) }}s</text>
-    <text x="4" y="{{ chart.plot_bottom }}" font-size="10" fill="var(--ink-dim)">0s</text>
+    <text x="4" y="{{ chart.plot_top + 4 }}" font-size="10" fill="var(--ink-dim)">{{ "%.0f"|format(chart.axis_hi) }}s+</text>
+    <text x="4" y="{{ chart.plot_bottom }}" font-size="10" fill="var(--ink-dim)">{{ "%.0f"|format(chart.axis_lo) }}s-</text>
+
+    <line x1="{{ chart.points[0].x if chart.points else 0 }}" y1="{{ chart.median_y }}"
+          x2="{{ chart.width }}" y2="{{ chart.median_y }}"
+          stroke="var(--rule-lt)" stroke-width="1" stroke-dasharray="2,3"/>
+    <text x="{{ chart.width - 4 }}" y="{{ chart.median_y - 4 }}" font-size="10"
+          fill="var(--ink-dim)" text-anchor="end">window median {{ "%.0f"|format(race.median) }}s</text>
 
     {% if chart.own_y is not none %}
     <line x1="{{ chart.points[0].x if chart.points else 0 }}" y1="{{ chart.own_y }}"
           x2="{{ chart.width }}" y2="{{ chart.own_y }}"
           stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="5,4"/>
     <text x="{{ chart.width - 4 }}" y="{{ chart.own_y - 4 }}" font-size="10"
-          fill="var(--accent)" text-anchor="end">your median</text>
+          fill="var(--accent)" text-anchor="end">your median{{ " (off scale)" if chart.own_clipped }}</text>
     {% endif %}
 
     <polyline fill="none" stroke="var(--ink-dim)" stroke-width="1.25"
       points="{% for p in chart.points %}{{ p.x }},{{ p.y }} {% endfor %}"/>
 
     {% for p in chart.points if not p.in_band %}
-    <circle cx="{{ p.x }}" cy="{{ p.y }}" r="3" fill="var(--paper)"
+    <circle cx="{{ p.x }}" cy="{{ p.y }}" r="3.5" fill="var(--paper)"
             stroke="var(--rule-lt)" stroke-width="1.5">
-      <title>Block {{ p.height }}: {{ "%.1f"|format(p.seconds) }}s (excluded outlier)</title>
+      <title>Block {{ p.height }}: {{ "%.1f"|format(p.seconds) }}s
+        ({{ "above" if p.clipped_high else "below" }} chart range, excluded from odds)</title>
     </circle>
     {% endfor %}
   </svg>
@@ -73,9 +80,11 @@
   <p class="stat-sub" style="margin-top:.4rem">
     Height is a proxy for the winning builder's real build time: every builder starts its VDF
     at roughly the same moment, and a block's timestamp is stamped the instant its builder
-    finishes, so this is (start delay + build time), not the literal number. Hollow points
-    fall outside 0.5x-2x the window's median and are excluded from the odds figure above,
-    but shown here as real data.
+    finishes, so this is (start delay + build time), not the literal number. The vertical axis
+    is zoomed to 0.5x-2x the window's median so ordinary variation is visible; hollow points
+    are pinned to the top/bottom edge because their real value falls outside that range
+    (hover for the exact number). They're excluded from the odds figure above but still
+    plotted, nothing is dropped from the chart itself.
   </p>
 </div>
 {% endif %}
