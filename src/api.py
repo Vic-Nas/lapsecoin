@@ -319,6 +319,40 @@ def fee_estimate(node):
             "next_block": next_block}
 
 
+# ---------------------------------------------------------------------------
+# Race-odds chart (plain inline SVG -- no JS charting library, matches the
+# rest of the site's self-contained, offline-friendly UI)
+# ---------------------------------------------------------------------------
+
+_CHART_W, _CHART_H = 860, 220
+_CHART_PAD_L, _CHART_PAD_T, _CHART_PAD_B = 46, 10, 22
+
+
+def _race_chart(race):
+    """Precompute SVG pixel geometry for the race-odds chart, so the
+    template only has to place already-computed points."""
+    rows = race["window"]
+    n = len(rows)
+    plot_w = _CHART_W - _CHART_PAD_L
+    plot_h = _CHART_H - _CHART_PAD_T - _CHART_PAD_B
+    y_max = max([i for _, i, _ in rows] + [race["own_seconds"] or 0]) * 1.05 or 1.0
+
+    def x_at(idx):
+        return _CHART_PAD_L + (idx / max(n - 1, 1)) * plot_w
+
+    def y_at(seconds):
+        return _CHART_PAD_T + plot_h - (seconds / y_max) * plot_h
+
+    points = [{"x": round(x_at(idx), 1), "y": round(y_at(seconds), 1),
+               "in_band": in_band, "height": h, "seconds": seconds}
+              for idx, (h, seconds, in_band) in enumerate(rows)]
+    own_y = round(y_at(race["own_seconds"]), 1) if race["own_seconds"] is not None else None
+    return {"points": points, "own_y": own_y,
+            "width": _CHART_W, "height": _CHART_H,
+            "plot_top": _CHART_PAD_T, "plot_bottom": _CHART_PAD_T + plot_h,
+            "y_max": y_max}
+
+
 def _default_send_outputs(pool):
     """One 'wallet,0' line per known peer with a confirmed wallet address,
     so the sender can just change the one 0 they actually want to send
@@ -366,7 +400,7 @@ def _shared_read_only_routes(app, node, pool, limiter,
             "dashboard": "dashboard", "explorer": "explorer",
             "block_detail": "explorer", "tx_detail": "explorer",
             "address_lookup": "address", "distribution_bucket": "address",
-            "peers": "peers",
+            "peers": "peers", "odds": "odds",
             "whitepaper": "whitepaper", "send": "send", "rewards": "rewards",
         }.get(endpoint)
         return {"is_private": is_private,
@@ -568,6 +602,12 @@ def _shared_read_only_routes(app, node, pool, limiter,
                                has_prev=page > 1, has_next=end < len(all_rows),
                                self_height=self_height, self_wallet=node.addr,
                                self_version=LOCAL_VERSION, self_addr=_self_external_addr())
+
+    @app.route("/odds", endpoint=pfx+"odds")
+    def odds():
+        race = block_mod.race_odds(node.view.chain, node.own_vdf_median())
+        chart = _race_chart(race) if race else None
+        return render_template("odds.html", title="Race Odds", race=race, chart=chart)
 
     # ---- JSON API (read-only) --------------------------------------------
 

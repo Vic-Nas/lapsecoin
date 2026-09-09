@@ -61,6 +61,10 @@ def get_vdf_iterations(chain) -> int:
 # than) the consensus retarget window in get_vdf_iterations.
 BLOCK_TIME_MEDIAN_WINDOW = 30
 
+# Blocks looked at for the race-odds page -- about 1 day at the ~120s
+# target. Display-only, like BLOCK_TIME_MEDIAN_WINDOW above.
+ODDS_WINDOW_BLOCKS = 720
+
 
 def block_time_stats(chain, height):
     """This block's own time-since-parent vs. the local median, and their
@@ -74,6 +78,79 @@ def block_time_stats(chain, height):
               for h in range(lo, height + 1)]
     median = statistics.median(deltas)
     return {"own": own, "median": median, "diff": own - median}
+
+
+def race_window(chain):
+    """Last ODDS_WINDOW_BLOCKS real block-to-block intervals, restricted to
+    the single most recent vdf_iterations regime.
+
+    Iterations only ratchet upward, never down (see VDF_ADJUST_INTERVAL in
+    params.py), so a window straddling an adjustment would mix two
+    different units of "seconds" -- walk back from the tip and stop at the
+    first change instead of silently averaging across the boundary.
+
+    Returns a list of (height, interval_seconds) tuples, oldest first.
+    Empty until there's at least one real interval (height 1).
+    """
+    n = len(chain)
+    if n < 2:
+        return []
+    start = max(1, n - ODDS_WINDOW_BLOCKS)
+    current_iterations = chain[-1].get("vdf_iterations")
+    rows = []
+    for h in range(n - 1, start - 1, -1):
+        if chain[h].get("vdf_iterations") != current_iterations:
+            break
+        rows.append((h, chain[h]["timestamp"] - chain[h - 1]["timestamp"]))
+    rows.reverse()
+    return rows
+
+
+def race_odds(chain, own_seconds):
+    """Race-odds page data.
+
+    own_seconds: this node's own median real VDF build time (over its last
+    30 actual attempts -- see Node._own_build_seconds), or None if it
+    hasn't finished a build yet.
+
+    A block's interval is a proxy for its builder's real build time, not
+    the literal number: every builder starts at roughly the same moment
+    (right after the previous tip is known), and a block's timestamp is
+    stamped the instant its builder finishes (see block.assemble's
+    caller), so interval = that builder's start delay + real build time.
+    The gap is normally small (single-digit seconds against a ~120s VDF)
+    but can grow under real propagation trouble, which is exactly what
+    the outlier band below is for.
+
+    Outlier band: intervals outside [window_median/2, window_median*2]
+    are flagged but never dropped -- they're real data, just excluded
+    from the odds calculation so a handful of propagation hiccups (or a
+    lying builder) can't swing a percentile computed over a small sample.
+
+    Returns None if there's no window yet. Otherwise:
+      {"window": [(height, interval_seconds, in_band), ...],
+       "median": float, "excluded": int,
+       "own_seconds": float or None, "odds_pct": float or None}
+    odds_pct is the percentage of in-band intervals this node's own
+    median would have beaten (finished before).
+    """
+    window = race_window(chain)
+    if not window:
+        return None
+    median = statistics.median(i for _, i in window)
+    lo, hi = median / 2, median * 2
+    rows = [(h, i, lo <= i <= hi) for h, i in window]
+    excluded = sum(1 for _, _, in_band in rows if not in_band)
+
+    odds_pct = None
+    if own_seconds is not None:
+        in_band = [i for _, i, ok in rows if ok]
+        if in_band:
+            beaten = sum(1 for i in in_band if i > own_seconds)
+            odds_pct = 100.0 * beaten / len(in_band)
+
+    return {"window": rows, "median": median, "excluded": excluded,
+            "own_seconds": own_seconds, "odds_pct": odds_pct}
 
 
 def vdf_challenge(previous_hash: str, builder: str) -> bytes:

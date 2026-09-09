@@ -176,17 +176,24 @@ class Node:
     def mark_tx_seen(self, tx_hash):
         return self.gossip.mark_seen(tx_hash)
 
-    def own_block_time_diff(self):
-        """This node's own median VDF build time (over its last 30 real
-        attempts, own_build_seconds -- see that field's docstring) vs. the
-        chain's own recent median block-to-block time (block_mod's
-        BLOCK_TIME_MEDIAN_WINDOW, whoever actually built each of those
-        blocks). Positive means this node is running slower than the
-        network's recent real pace. None until this node has completed a
-        build, or the chain has too few blocks for a chain-side median."""
+    def own_vdf_median(self):
+        """This node's own median real VDF build time, over its last 30
+        actual attempts (own_build_seconds -- see that field's docstring).
+        None until this node has completed at least one build."""
         if not self._own_build_seconds:
             return None
-        own_median = statistics.median(self._own_build_seconds)
+        return statistics.median(self._own_build_seconds)
+
+    def own_block_time_diff(self):
+        """This node's own median VDF build time vs. the chain's own recent
+        median block-to-block time (block_mod's BLOCK_TIME_MEDIAN_WINDOW,
+        whoever actually built each of those blocks). Positive means this
+        node is running slower than the network's recent real pace. None
+        until this node has completed a build, or the chain has too few
+        blocks for a chain-side median."""
+        own_median = self.own_vdf_median()
+        if own_median is None:
+            return None
         chain = self.view.chain
         stats = block_mod.block_time_stats(chain, len(chain) - 1)
         if stats is None:
