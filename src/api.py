@@ -332,21 +332,10 @@ _TICK_COUNT = 5  # labeled horizontal gridlines, evenly spaced across the axis
 
 
 def _race_chart(race):
-    """Precompute SVG pixel geometry for the race-odds chart, so the
-    template only has to place already-computed points.
+    """Precompute SVG pixel geometry for the race-odds chart.
 
-    The y-axis hugs the actual in-band data range (plus a small margin),
-    not a fixed formula -- otherwise the axis can sit far below the real
-    minimum and leave a dead gap between the plotted line and the x-axis
-    for no reason. Points outside that range (already excluded from the
-    odds figure, per the median/2-median*2 band) clip to the plot's
-    top/bottom edge instead, with a hollow marker and a tooltip carrying
-    the real value: visible as "off the chart", not hidden, but not
-    allowed to stretch the axis and flatten everything else either.
-
-    A handful of labeled gridlines (_TICK_COUNT, evenly spaced across the
-    axis) are computed here too, so the chart has more than just a top and
-    bottom number to compare a point against.
+    Axis range is adaptive: it hugs the in-band data (plus a small
+    margin), so out-of-band points clip to the plot edge instead.
     """
     rows = race["window"]
     n = len(rows)

@@ -81,16 +81,11 @@ def block_time_stats(chain, height):
 
 
 def race_window(chain):
-    """Last ODDS_WINDOW_BLOCKS real block-to-block intervals, restricted to
-    the single most recent vdf_iterations regime.
-
-    Iterations only ratchet upward, never down (see VDF_ADJUST_INTERVAL in
-    params.py), so a window straddling an adjustment would mix two
-    different units of "seconds" -- walk back from the tip and stop at the
-    first change instead of silently averaging across the boundary.
+    """Last ODDS_WINDOW_BLOCKS block-to-block intervals, restricted to the
+    single most recent vdf_iterations regime so seconds stay comparable
+    (iterations only ratchet upward, see VDF_ADJUST_INTERVAL).
 
     Returns a list of (height, interval_seconds) tuples, oldest first.
-    Empty until there's at least one real interval (height 1).
     """
     n = len(chain)
     if n < 2:
@@ -107,32 +102,19 @@ def race_window(chain):
 
 
 def race_odds(chain, own_seconds):
-    """Race-odds page data.
+    """Race-odds page data: recent block intervals (a proxy for builder
+    build time), an outlier band, and this node's odds of beating the
+    field. own_seconds is this node's own median real VDF build time, or
+    None if it hasn't finished a build yet.
 
-    own_seconds: this node's own median real VDF build time (over its last
-    30 actual attempts -- see Node._own_build_seconds), or None if it
-    hasn't finished a build yet.
-
-    A block's interval is a proxy for its builder's real build time, not
-    the literal number: every builder starts at roughly the same moment
-    (right after the previous tip is known), and a block's timestamp is
-    stamped the instant its builder finishes (see block.assemble's
-    caller), so interval = that builder's start delay + real build time.
-    The gap is normally small (single-digit seconds against a ~120s VDF)
-    but can grow under real propagation trouble, which is exactly what
-    the outlier band below is for.
-
-    Outlier band: intervals outside [window_median/2, window_median*2]
-    are flagged but never dropped -- they're real data, just excluded
-    from the odds calculation so a handful of propagation hiccups (or a
-    lying builder) can't swing a percentile computed over a small sample.
+    Intervals outside [window_median/2, window_median*2] are flagged but
+    never dropped -- excluded from the odds calculation, still shown.
 
     Returns None if there's no window yet. Otherwise:
       {"window": [(height, interval_seconds, in_band), ...],
        "median": float, "excluded": int,
        "own_seconds": float or None, "odds_pct": float or None}
-    odds_pct is the percentage of in-band intervals this node's own
-    median would have beaten (finished before).
+    odds_pct is the percentage of in-band intervals own_seconds beats.
     """
     window = race_window(chain)
     if not window:

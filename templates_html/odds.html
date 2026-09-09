@@ -81,14 +81,9 @@
   </svg>
   </div>
   <p class="stat-sub" style="margin-top:.4rem">
-    Height is a proxy for the winning builder's real build time: every builder starts its VDF
-    at roughly the same moment, and a block's timestamp is stamped the instant its builder
-    finishes, so this is (start delay + build time), not the literal number. The vertical axis
-    is scaled to the actual data range so ordinary variation is visible, rather than a fixed
-    scale a single spike would flatten; hollow points are pinned to the top/bottom edge
-    because their real value falls outside that range (hover for the exact number). They're
-    excluded from the odds figure above but still plotted, nothing is dropped from the chart
-    itself.
+    Block interval is a proxy for the winning builder's real build time. Hollow points fall
+    outside the 0.5x-2x median band (hover for the exact value); excluded from the odds
+    figure above, still shown here.
   </p>
 </div>
 {% endif %}
