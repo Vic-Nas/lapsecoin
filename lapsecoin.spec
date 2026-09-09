@@ -116,7 +116,13 @@ if sys.platform == "win32":
         name="lapsecoin",
         debug=False,
         strip=False,
-        upx=True,
+        # UPX-packed executables are a common heuristic trigger for AV
+        # engines (the same compression malware droppers use to evade
+        # static signatures), which was flagging this onefile build before
+        # users could even run it. Uncompressed and larger, but otherwise
+        # identical: still a single lapsecoin.exe, same distribution and
+        # update flow.
+        upx=False,
         upx_exclude=[],
         console=False,
         icon="favicon.ico",
