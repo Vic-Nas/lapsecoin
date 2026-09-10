@@ -49,6 +49,11 @@
     </line>
     {% endif %}
     {% endfor %}
+    {% for p in chart.points if p.clipped %}
+    <circle cx="{{ p.x }}" cy="{{ p.y }}" r="4" fill="var(--paper)" stroke="{{ p.color }}" stroke-width="2">
+      <title>Block {{ p.height }}: {{ "%.1f"|format(p.seconds) }}s{{ " -- " ~ p.builder if p.builder }} (off scale, chart zoomed to typical range)</title>
+    </circle>
+    {% endfor %}
 
     <!-- Reference lines render last (on top of the data) so their labels
          stay legible over whatever color the data line happens to be
@@ -82,7 +87,9 @@
   <p class="stat-sub" style="margin-top:.4rem">
     Block interval is a proxy for the winning builder's real build time. Color marks the
     top 3 builders by block count in this window; everyone else shares the muted "Other"
-    color.
+    color. The chart is zoomed to the typical range; hollow points fall outside it and are
+    clipped to the edge (hover for the real value) -- this doesn't affect the odds figure
+    above, which counts every interval.
   </p>
 </div>
 <script>
@@ -106,6 +113,11 @@
       const label = p.builder ? " -- " + p.builder : "";
       s += `<line x1="${prev.x}" y1="${prev.y}" x2="${p.x}" y2="${p.y}" stroke="${p.color}" stroke-width="1.75">` +
            `<title>Block ${p.height}: ${fmt1(p.seconds)}s${label}</title></line>`;
+    });
+    chart.points.filter(function (p) { return p.clipped; }).forEach(function (p) {
+      const label = p.builder ? " -- " + p.builder : "";
+      s += `<circle cx="${p.x}" cy="${p.y}" r="4" fill="var(--paper)" stroke="${p.color}" stroke-width="2">` +
+           `<title>Block ${p.height}: ${fmt1(p.seconds)}s${label} (off scale, chart zoomed to typical range)</title></circle>`;
     });
     // Reference lines/labels last -- on top of the data lines, see the
     // matching comment in the server-rendered SVG above.

@@ -591,3 +591,60 @@ class TestRaceOddsNoOutlierBand:
         assert len(race["window"]) == 4
         # own_seconds=100 beats all 4 intervals (150,150,150,1500).
         assert race["odds_pct"] == pytest.approx(100.0)
+
+
+class TestRaceChartAxisZoom:
+    """The chart's y-axis is a display decision, separate from the stats:
+    it zooms to the typical cluster of values instead of stretching to fit
+    a rare outlier, which would otherwise flatten every normal point into
+    a sliver at the bottom of the plot. An outlier still renders, clipped
+    to the plot edge and marked, with its real value in the tooltip."""
+
+    def _chain(self, intervals):
+        """Build a chain whose actual block-to-block intervals match
+        `intervals` exactly. make_block's timestamp_offset is added on top
+        of a fixed height*120 base, so it isn't itself the interval --
+        convert desired intervals to the offsets that produce them."""
+        chain = [genesis()]
+        cum_offset = 0
+        for h, interval in enumerate(intervals, start=1):
+            base_gap = 240 if h == 1 else 120
+            cum_offset += interval - base_gap
+            chain.append(make_block(h, chain[-1]["hash"], [], timestamp_offset=cum_offset))
+        return chain
+
+    def test_outlier_does_not_stretch_axis_to_fit(self):
+        import api as api_mod
+        # Five normal ~150s intervals, one 1500s stall.
+        chain = self._chain([150, 150, 150, 150, 150, 1500])
+        race = block_mod.race_odds(chain, own_seconds=None)
+        chart = api_mod._race_chart(race)
+        # If the axis had stretched to include 1500, axis_hi would be
+        # far above the typical band; zoomed, it should hug ~150-165s.
+        assert chart["axis_hi"] < 300
+
+    def test_outlier_point_flagged_clipped(self):
+        import api as api_mod
+        chain = self._chain([150, 150, 150, 150, 150, 1500])
+        race = block_mod.race_odds(chain, own_seconds=None)
+        chart = api_mod._race_chart(race)
+        clipped = [p for p in chart["points"] if p["clipped"]]
+        assert len(clipped) == 1
+        assert clipped[0]["seconds"] == 1500
+
+    def test_normal_points_not_clipped(self):
+        import api as api_mod
+        chain = self._chain([150, 150, 150, 150, 150, 1500])
+        race = block_mod.race_odds(chain, own_seconds=None)
+        chart = api_mod._race_chart(race)
+        normal = [p for p in chart["points"] if p["seconds"] == 150]
+        assert all(not p["clipped"] for p in normal)
+
+    def test_no_outliers_axis_unaffected(self):
+        """Sanity check: with no outliers, the typical-range filter is a
+        no-op and every point stays unclipped."""
+        import api as api_mod
+        chain = self._chain([150, 152, 148, 151, 149])
+        race = block_mod.race_odds(chain, own_seconds=None)
+        chart = api_mod._race_chart(race)
+        assert all(not p["clipped"] for p in chart["points"])

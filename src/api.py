@@ -344,10 +344,14 @@ _OTHER_COLOR = "var(--series-other)"
 def _race_chart(race):
     """Precompute SVG pixel geometry for the race-odds chart.
 
-    Axis range hugs the window's actual min/max (plus a small margin) --
-    no outlier band or special-casing: a real network stall just shows up
-    as one tall point compressing the rest of the chart, an acceptable
-    accuracy tradeoff for a display-only page (see race_odds's docstring).
+    Axis range is a display decision, kept separate from the stats: it
+    hugs the typical cluster of values (within 2x of the median either
+    way), not the raw min/max, so one real stall doesn't compress every
+    other point into a sliver at the bottom of the chart -- that point
+    still renders, clipped to the plot edge with a marker, and its real
+    value is still in the tooltip. This has zero effect on race_odds's
+    own median/odds_pct, which already use every interval unclipped (see
+    that function's docstring) -- only where the line gets drawn changes.
 
     Points are colored by builder to make dominance visible: the top 3
     builders (by block count in this window) each get a fixed, validated
@@ -362,7 +366,8 @@ def _race_chart(race):
     median = race["median"]
     own_seconds = race["own_seconds"]
 
-    domain = [s for _, s, _ in rows]
+    typical = [s for _, s, _ in rows if median / 2 <= s <= median * 2] or [s for _, s, _ in rows]
+    domain = list(typical)
     if own_seconds is not None:
         domain.append(own_seconds)
     data_lo, data_hi = min(domain), max(domain)
@@ -387,6 +392,7 @@ def _race_chart(race):
 
     points = [{"x": round(x_at(idx), 1), "y": round(y_at(seconds), 1),
                "height": h, "seconds": seconds,
+               "clipped": seconds > axis_hi or seconds < axis_lo,
                "builder": builder, "color": color_by_builder.get(builder, _OTHER_COLOR)}
               for idx, (h, seconds, builder) in enumerate(rows)]
 
