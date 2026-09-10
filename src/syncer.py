@@ -94,13 +94,54 @@ class Syncer:
         log.info("[sync] peer=%s remote=%d local=%d fork_from=%d fetching",
                  peer, remote_height, local_height, fork_from)
 
-        tail = self._fetch_chain(peer, fork_from, remote_height)
-        if not tail:
-            log.warning("[sync] fetch returned empty  peer=%s", peer)
-            return False
+        return self._fetch_and_apply(peer, local_chain, fork_from, remote_height, apply_fn)
 
-        full_chain = local_chain[:fork_from] + tail
-        return apply_fn(full_chain)
+    def _fetch_and_apply(self, peer, local_chain, fork_from, remote_height, apply_fn):
+        """Fetch in FETCH_CHUNK-block pages, applying each page as it
+        arrives instead of buffering the whole tail and applying it once at
+        the end.
+
+        Two reasons: a node many blocks behind would otherwise sit with an
+        unchanged height for the entire fetch, however long that takes,
+        then jump straight to the final height in one atomic step -- nothing
+        about the transfer is actually all-or-nothing, only its visibility
+        was. And a peer that drops mid-fetch now leaves behind whatever
+        pages already landed instead of only the single already-existing
+        partial-tail fallback below covering that case.
+
+        Applying per page is only cheap because node.py's
+        _evaluate_remote_chain has a fast path for the common case (this
+        page's chain is a pure extension of the current tip): it builds on
+        the already-in-memory ChainState instead of replaying the whole
+        chain from genesis on every page.
+
+        Returns True if at least one page was applied.
+        """
+        applied_any = False
+        tail_so_far = []
+        h = fork_from
+        while h <= remote_height:
+            to_h = min(h + FETCH_CHUNK - 1, remote_height)
+            resp = self._request_sync_with_retry(peer, from_h=h, to_h=to_h, timeout=30)
+            if resp is None:
+                log.warning("[sync] fetch page empty  peer=%s  from_h=%d", peer, h)
+                break
+            page = resp.get("chain") if isinstance(resp, dict) else None
+            if not isinstance(page, list) or not page:
+                log.warning("[sync] fetch page empty  peer=%s  from_h=%d", peer, h)
+                break
+
+            tail_so_far += page
+            full_chain = local_chain[:fork_from] + tail_so_far
+            if not apply_fn(full_chain):
+                log.warning("[sync] page rejected  peer=%s  from_h=%d", peer, h)
+                break
+            applied_any = True
+
+            if len(page) < FETCH_CHUNK:
+                break
+            h += FETCH_CHUNK
+        return applied_any
 
     def _request_sync_with_retry(self, peer, from_h, to_h, timeout):
         """request_sync, retrying a bare timeout/decode-failure a few times

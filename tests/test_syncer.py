@@ -61,11 +61,11 @@ class TestCheckAndSync:
         # Syncer always fetches and compares regardless of local vs. remote height
         syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
         udp.get_info.return_value = {"height": 2, "tip_hash": ""}
+        udp.request_sync.return_value = wrap_chain(chain_of(3)[1:])
         local = chain_of(5)
         apply_fn = MagicMock(return_value=False)
         with patch.object(syncer, "_find_fork_point", return_value=0):
-            with patch.object(syncer, "_fetch_chain", return_value=chain_of(3)[1:]):
-                syncer.check_and_sync(local, apply_fn=apply_fn)
+            syncer.check_and_sync(local, apply_fn=apply_fn)
         apply_fn.assert_called_once()
 
     def test_fork_point_none_returns_false(self):
@@ -77,9 +77,9 @@ class TestCheckAndSync:
     def test_empty_tail_returns_false(self):
         syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
         udp.get_info.return_value = {"height": 10, "tip_hash": ""}
+        udp.request_sync.return_value = None
         with patch.object(syncer, "_find_fork_point", return_value=0):
-            with patch.object(syncer, "_fetch_chain", return_value=None):
-                assert syncer.check_and_sync(chain_of(2), apply_fn=MagicMock()) is False
+            assert syncer.check_and_sync(chain_of(2), apply_fn=MagicMock()) is False
 
     def test_success_calls_apply_fn(self):
         syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
@@ -87,10 +87,45 @@ class TestCheckAndSync:
         remote_tail = chain_of(5)[1:]
         apply_fn = MagicMock(return_value=True)
         udp.get_info.return_value = {"height": 4, "tip_hash": "aa" * 32}
+        udp.request_sync.return_value = wrap_chain(remote_tail)
         with patch.object(syncer, "_find_fork_point", return_value=1):
-            with patch.object(syncer, "_fetch_chain", return_value=remote_tail):
-                result = syncer.check_and_sync(local, apply_fn=apply_fn)
+            result = syncer.check_and_sync(local, apply_fn=apply_fn)
         apply_fn.assert_called_once()
+        assert result is True
+
+    def test_multi_page_applies_each_page(self):
+        # A tail longer than one FETCH_CHUNK should call apply_fn once per
+        # page, not once for the whole tail -- this is the actual behavior
+        # change: height should be able to advance incrementally instead of
+        # jumping straight from local height to final height in one step.
+        syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
+        local = chain_of(2)
+        page1 = chain_of(FETCH_CHUNK + 1)[1:]  # heights 1..FETCH_CHUNK
+        page2 = chain_of(3)[1:]                # heights FETCH_CHUNK+1..FETCH_CHUNK+2
+        responses = iter([wrap_chain(page1), wrap_chain(page2)])
+        udp.get_info.return_value = {"height": FETCH_CHUNK + 2, "tip_hash": ""}
+        udp.request_sync.side_effect = lambda *a, **kw: next(responses)
+        apply_fn = MagicMock(return_value=True)
+        with patch.object(syncer, "_find_fork_point", return_value=1):
+            result = syncer.check_and_sync(local, apply_fn=apply_fn)
+        assert apply_fn.call_count == 2
+        assert result is True
+
+    def test_page_rejected_stops_but_keeps_earlier_progress(self):
+        # If a later page is rejected, check_and_sync should still report
+        # True (earlier pages were already applied) rather than throwing
+        # away progress that already landed.
+        syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
+        local = chain_of(2)
+        page1 = chain_of(FETCH_CHUNK + 1)[1:]
+        page2 = chain_of(3)[1:]
+        responses = iter([wrap_chain(page1), wrap_chain(page2)])
+        udp.get_info.return_value = {"height": FETCH_CHUNK + 2, "tip_hash": ""}
+        udp.request_sync.side_effect = lambda *a, **kw: next(responses)
+        apply_fn = MagicMock(side_effect=[True, False])
+        with patch.object(syncer, "_find_fork_point", return_value=1):
+            result = syncer.check_and_sync(local, apply_fn=apply_fn)
+        assert apply_fn.call_count == 2
         assert result is True
 
 

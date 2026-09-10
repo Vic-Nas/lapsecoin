@@ -567,9 +567,8 @@ class Node:
         Order of operations matters for security:
           1. Genesis check  cheap, stops wrong-network chains immediately.
           2. Fork point     O(min(local, remote)) hash comparisons.
-          3. _validate_tail structural block validation on untrusted data.
-          4. from_chain     trusted replay, only runs on validated blocks.
-          5. is_better_than fork choice, only after we know it's valid.
+          3. Build remote_cs, either the fast-extend path or the full replay.
+          4. is_better_than fork choice, only after we know it's valid.
         """
         if not remote_chain or remote_chain[0]["hash"] != self.cs.genesis_hash:
             log.warning("[sync] rejected genesis mismatch  remote=%s  expected=%s",
@@ -584,16 +583,38 @@ class Node:
         )
         tail = remote_chain[fork_point:]
 
-        ok, err = _validate_tail(tail, remote_chain[:fork_point])
-        if not ok:
-            log.warning("[sync] rejected: %s", err)
-            return False, err, None, None, None
-
-        try:
-            remote_cs = ChainState.from_chain(remote_chain)
-        except Exception as e:
-            log.warning("[sync] chain replay failed: %s", e)
-            return False, f"chain replay error: {e}", None, None, None
+        if fork_point == len(self.cs.chain):
+            # Pure extension (by far the common case): remote_chain's prefix
+            # is exactly self.cs.chain, already fully built and sitting in
+            # memory. Validate and apply just the new tail directly onto it,
+            # one block at a time, instead of re-deriving the whole chain's
+            # state from scratch -- ChainState.from_chain (the branch below)
+            # replays every block since genesis on every call, so without
+            # this a node syncing far behind in many small pages would redo
+            # that full replay once per page, O(chain length) work per page
+            # instead of O(page size).
+            cs = self.cs
+            for blk in tail:
+                ok, err, cs = cs.validate_and_apply(blk)
+                if not ok:
+                    log.warning("[sync] rejected: invalid block at %s: %s",
+                               blk.get("height"), err)
+                    return False, f"invalid block at {blk['height']}: {err}", None, None, None
+            remote_cs = cs
+        else:
+            # Reorg: remote_chain diverges before our current tip. Rare and
+            # typically shallow, so a full replay of the (shorter, common)
+            # prefix plus the new tail is an acceptable cost here, unlike
+            # the common extension case above.
+            ok, err = _validate_tail(tail, remote_chain[:fork_point])
+            if not ok:
+                log.warning("[sync] rejected: %s", err)
+                return False, err, None, None, None
+            try:
+                remote_cs = ChainState.from_chain(remote_chain)
+            except Exception as e:
+                log.warning("[sync] chain replay failed: %s", e)
+                return False, f"chain replay error: {e}", None, None, None
 
         if not remote_cs.is_better_than(self.cs):
             log.debug("[sync] remote chain not better  remote_h=%d  local_h=%d",
