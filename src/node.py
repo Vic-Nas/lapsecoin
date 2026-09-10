@@ -5,11 +5,9 @@ One cycle:
   2. sync                pull a better chain from a random peer
   3. vdf.evaluate()      blocks ~120s, re-checking sync every
                          SYNC_POLL_INTERVAL_SECONDS while waiting
-  4. assemble
-  4b. fairness throttle  if recently dominant, hold broadcast up to
-                         FAIRNESS_WAIT_CAP_SECONDS for a competitor
-  5. broadcast + drain (5s)  collect peer blocks
-  6. pick winner         lowest vdf_output among all valid candidates seen
+  4. assemble + broadcast
+  5. drain queue (5s)    collect peer blocks
+  6. pick winner         first valid peer block received, else own candidate
   7. commit              swap ChainState, persist, publish view
 
 Flask threads read node.view (a NodeView snapshot). The node loop is the
@@ -60,24 +58,6 @@ SYNC_POLL_INTERVAL_SECONDS = 10
 # case (peer alive, already in sync) the real round trip is milliseconds, so
 # this only matters for the failure case it's meant to bound.
 SYNC_POLL_INFO_TIMEOUT_SECONDS = 2.0
-
-# Fairness throttle: on a young, small, trust-based network, one builder
-# with a real hardware edge can win essentially every block simply by
-# finishing so far ahead that no one else is even in the comparison
-# window yet (see _pick_winner) -- not by cheating, just by a large gap
-# with no competition to close it. This is a voluntary, client-side
-# behavior, not a consensus rule: it only helps while everyone runs the
-# official client in good faith, and stops mattering the moment there's
-# real incentive to run a stripped client that ignores it. That's fine
-# for now; it isn't meant to be a permanent security assumption.
-#
-# Recalculated fresh every cycle from a trailing window, so it turns
-# itself off the moment real competition shows up, no manual reset
-# needed.
-FAIRNESS_WIN_HISTORY      = 30    # cycles considered for the rolling win rate
-FAIRNESS_MIN_SAMPLES      = 10    # don't act on too little data just after startup
-FAIRNESS_WIN_RATE_TRIGGER = 0.90  # only throttle when this dominant
-FAIRNESS_WAIT_CAP_SECONDS = 30    # max extra wait per cycle, never open-ended
 
 
 # ---------------------------------------------------------------------------
@@ -156,15 +136,6 @@ class Node:
         self._own_build_seconds = collections.deque(maxlen=30)
         self._load_own_build_seconds()
 
-        # True/False per recent cycle: did this node's own candidate end up
-        # the winner? Drives the fairness throttle above. Not persisted
-        # across restarts (unlike own_build_seconds) -- starting empty
-        # after a restart just means the throttle stays off until enough
-        # fresh samples accumulate, which is the safe default direction,
-        # never the harmful one.
-        self._own_win_history  = collections.deque(maxlen=FAIRNESS_WIN_HISTORY)
-        self._fairness_enabled = self._load_fairness_enabled()
-
         self.cs   = self._load_cs()
         self.view = NodeView(self.cs)
 
@@ -190,35 +161,6 @@ class Node:
     def _save_own_build_seconds(self):
         self.storage.set_meta(self._OWN_BUILD_SECONDS_META_KEY,
                               json.dumps(list(self._own_build_seconds)))
-
-    _FAIRNESS_ENABLED_META_KEY = "fairness_throttle_enabled"
-
-    def _load_fairness_enabled(self):
-        """Defaults to on: most node runners never open the settings UI,
-        so the safer default for a young network is opted in, not silently
-        off until someone finds the toggle."""
-        raw = self.storage.get_meta(self._FAIRNESS_ENABLED_META_KEY)
-        return True if raw is None else raw == "1"
-
-    def fairness_enabled(self):
-        return self._fairness_enabled
-
-    def set_fairness_enabled(self, enabled):
-        self._fairness_enabled = enabled
-        self.storage.set_meta(self._FAIRNESS_ENABLED_META_KEY, "1" if enabled else "0")
-
-    def fairness_win_rate(self):
-        """Trailing win rate over the last FAIRNESS_WIN_HISTORY cycles, or
-        None if there aren't enough samples yet to act on."""
-        if len(self._own_win_history) < FAIRNESS_MIN_SAMPLES:
-            return None
-        return sum(self._own_win_history) / len(self._own_win_history)
-
-    def _should_throttle(self):
-        if not self._fairness_enabled:
-            return False
-        rate = self.fairness_win_rate()
-        return rate is not None and rate >= FAIRNESS_WIN_RATE_TRIGGER
 
     def _load_cs(self):
         """Load or create ChainState from storage."""
@@ -475,49 +417,18 @@ class Node:
         if not ok:
             log.error("[vdf] self-produced block failed validation: %s", err)
             return
-
-        extra_blocks = []
-        if self._should_throttle():
-            log.info("[fairness] recent win rate %.0f%% >= trigger, holding "
-                     "broadcast up to %ds for a competitor",
-                     self.fairness_win_rate() * 100, FAIRNESS_WAIT_CAP_SECONDS)
-            extra_blocks = self._wait_for_competitor(cs, accumulated_blocks)
-
         self.gossip.broadcast_block(candidate)
 
         # Drain anything that arrived just as VDF completed, then pick winner.
         # All peer candidates should already be in accumulated_blocks since VDFs
         # take roughly the same time. _drain_queue() with no timeout flushes
         # whatever is already in the queue without blocking.
-        peer_blocks = accumulated_blocks + extra_blocks + self._drain_queue()
+        peer_blocks = accumulated_blocks + self._drain_queue()
         # Pass cs explicitly; self.cs may have advanced during drain if syncer fired.
         winner, relay = self._pick_winner(cs, candidate, peer_blocks)
         if winner is None:
             return
-        self._own_win_history.append(winner is candidate)
         self._commit(winner, relay=relay)
-
-    def _has_competitor(self, cs, blocks):
-        tip = cs.tip
-        return any(b.get("height") == tip["height"] + 1
-                   and b.get("previous_hash") == tip["hash"] for b in blocks)
-
-    def _wait_for_competitor(self, cs, accumulated_blocks):
-        """Fairness throttle: hold off broadcasting our own candidate for up
-        to FAIRNESS_WAIT_CAP_SECONDS, or until a same-height peer block
-        shows up, whichever is first. Capped so a quiet moment with no one
-        else online can't stall this node's own chain production -- see
-        FAIRNESS_WAIT_CAP_SECONDS's docstring above for why this exists."""
-        if self._has_competitor(cs, accumulated_blocks):
-            return []  # a competitor already arrived during the VDF wait itself
-        collected = []
-        deadline = time.monotonic() + FAIRNESS_WAIT_CAP_SECONDS
-        while time.monotonic() < deadline:
-            got = self._drain_queue(timeout=min(1, deadline - time.monotonic()))
-            collected += got
-            if self._has_competitor(cs, got):
-                break
-        return collected
 
     def _pick_winner(self, cs, candidate, peer_blocks):
         """Return (best_block, relay). relay=True means it came from a peer.
