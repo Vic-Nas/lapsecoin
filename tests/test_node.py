@@ -17,7 +17,7 @@ import sys
 import queue
 import threading
 import time
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -950,7 +950,7 @@ class TestRunCycleSettleWindow:
     abort our own attempt and resolve the height from whatever candidates
     we have instead of grinding to completion against a height that's
     likely already settled elsewhere. Nothing unvalidated may ever reach
-    this path (see _validate_and_relay_candidate's docstring)."""
+    this path (see _validate_candidate's docstring)."""
 
     def _cancellable_fake_evaluate(self, total_seconds, poll=0.02):
         """Unlike _slow_fake_evaluate, this one actually honors handle,
@@ -967,7 +967,7 @@ class TestRunCycleSettleWindow:
             return "aa" * 100, "bb" * 100, total_seconds
         return _evaluate
 
-    def test_peer_candidate_arms_settle_window_and_gets_relayed(
+    def test_peer_candidate_arms_settle_window(
         self, node_env, monkeypatch
     ):
         node, *_, gossip, syncer, pool, net_q = node_env
@@ -983,14 +983,6 @@ class TestRunCycleSettleWindow:
 
         node._run_cycle()
 
-        # Relayed because it validated -- see gossip.relay_block. Called
-        # from more than one path here (the pre-loop pass and
-        # _pick_winner's own validation both see it); the real Gossip
-        # dedupes redundant relays via its seen-block cache (see
-        # test_gossip.py), which this mock doesn't replicate, so assert
-        # only that a real relay happened with the right block, not an
-        # exact count.
-        assert call(peer_blk) in gossip.relay_block.call_args_list
         # Own attempt abandoned; the peer's block is the only entrant, so
         # it's what gets committed.
         commit_spy.assert_called_once()
@@ -1019,7 +1011,7 @@ class TestRunCycleSettleWindow:
         self, node_env, monkeypatch
     ):
         """A garbage/invalid same-height message must never trigger relay
-        or the settle timer -- see _validate_and_relay_candidate's
+        or the settle timer -- see _validate_candidate's
         docstring on why (a free griefing vector otherwise: crafting a
         fake block costs nothing, but aborting a real in-flight VDF does
         not). Own VDF should finish and win normally, undisturbed."""
@@ -1032,7 +1024,7 @@ class TestRunCycleSettleWindow:
 
         g = node.cs.tip
         garbage = make_block(1, g["hash"], [], builder_index=1, vdf_output="aa")
-        # An out-of-range height fails _validate_and_relay_candidate's
+        # An out-of-range height fails _validate_candidate's
         # height check unconditionally, regardless of what the autouse
         # vdf.verify mock would otherwise let through.
         garbage["height"] = 999
@@ -1040,7 +1032,6 @@ class TestRunCycleSettleWindow:
 
         node._run_cycle()
 
-        gossip.relay_block.assert_not_called()
         commit_spy.assert_called_once()
         winner = commit_spy.call_args.args[0]
         assert winner.get("builder") == node.addr  # own candidate won, not the garbage

@@ -632,7 +632,7 @@ class Node:
         whether that block showed up before the wait loop started or
         during it)."""
         accumulated_blocks.append(blk)
-        if not self._validate_and_relay_candidate(blk, cs):
+        if not self._validate_candidate(blk, cs):
             return settle_deadline
         arrived_at = time.monotonic()
         if settle_deadline is None:
@@ -645,20 +645,20 @@ class Node:
             self._candidate_gap_seconds.append(arrived_at - first_candidate_at)
         return settle_deadline
 
-    def _validate_and_relay_candidate(self, blk, cs):
+    def _validate_candidate(self, blk, cs):
         """True if blk is a fully validated candidate for cs.height+1
-        extending cs.tip. As a side effect, relays it to this node's own
-        peers (gossip.relay_block) so propagation isn't capped at whoever
-        the original builder happened to be directly peered with (see
-        relay_block's docstring in gossip.py).
+        extending cs.tip.
 
-        Nothing here may be skipped or reordered: this is the one gate
-        standing between an attacker-crafted, zero-cost "block" message
-        and two things that are otherwise real and costly -- relaying
-        network bandwidth on everyone's behalf, and (via the settle-window
-        state this return value feeds in _run_cycle) aborting a node's own
-        in-flight VDF. A block that hasn't cleared real block_mod.validate()
-        must never be allowed to influence either.
+        This is the one gate standing between an attacker-crafted,
+        zero-cost "block" message and aborting this node's own in-flight
+        VDF (via the settle-window state this return value feeds in
+        _run_cycle). Crafting a fake block message costs nothing; the work
+        it would cancel costs ~120s. A block that hasn't cleared real
+        block_mod.validate() must never be allowed to influence that.
+
+        Deliberately does not relay: peer_udp's MT_BLOCK dispatch already
+        floods every inbound block one hop further on first sight of its
+        msg_id, so propagation is handled below this layer.
         """
         if blk.get("height") != cs.height + 1:
             return False
@@ -668,7 +668,6 @@ class Node:
         if not ok:
             log.debug("[vdf] rejected inbound candidate: %s", err)
             return False
-        self.gossip.relay_block(blk)
         return True
 
     def _pick_winner(self, cs, candidate, peer_blocks):
@@ -698,12 +697,6 @@ class Node:
             log.debug("[vdf] peer block accepted  height=%d  hash=%s  builder=%s  tx=%d",
                       blk["height"], blk["hash"][:12],
                       (blk.get("builder") or "")[:24], len(blk.get("transactions", [])))
-            # Relay dedups via gossip's seen-block cache, so this is a cheap
-            # no-op for anything already relayed earlier in the wait loop
-            # (_validate_and_relay_candidate) -- kept here too so every
-            # code path that validates a peer block also relays it, not
-            # just the mid-wait one.
-            self.gossip.relay_block(blk)
             valid_peers.append(blk)
 
         if candidate is not None and candidate.get("previous_hash") != tip["hash"]:
