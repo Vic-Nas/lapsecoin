@@ -52,13 +52,28 @@ _ICON_SVG = os.path.join(_resource_dir(), "lapsecoin.svg")
 
 
 def _apply_icon(root):
-    """Rasterize the repo's lapsecoin.svg in memory and set it as the window
-    icon. No generated asset checked into the repo or written to disk --
-    cairosvg is already a hard dependency (used elsewhere for the app), so
-    this stays a single source of truth for the logo. Failure here should
-    never take down the GUI itself, worst case the window just keeps
-    whatever default icon the OS/tkinter picks."""
+    """Set the window's title bar/taskbar icon.
+
+    On Windows, Tk's iconphoto() is unreliable for this -- some Tcl/Tk
+    builds only apply it to a subset of icon slots, so the .exe shows the
+    right icon (that's set separately, via PyInstaller's own icon= on the
+    EXE) while the actual window doesn't. iconbitmap() with a real .ico is
+    the reliable path there, and favicon.ico is already bundled for the
+    .exe's own icon, so it's reused here rather than adding a second asset.
+
+    Elsewhere, rasterize the repo's lapsecoin.svg in memory and use
+    iconphoto() as before -- no generated asset checked into the repo or
+    written to disk, cairosvg is already a hard dependency. Failure here
+    should never take down the GUI itself, worst case the window just
+    keeps whatever default icon the OS/tkinter picks.
+    """
     try:
+        if sys.platform.startswith("win"):
+            ico_path = os.path.join(_resource_dir(), "favicon.ico")
+            if os.path.exists(ico_path):
+                root.iconbitmap(default=ico_path)
+                return
+
         import cairosvg
         from PIL import Image, ImageTk
 
