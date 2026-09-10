@@ -49,7 +49,7 @@ python main.py
 <summary>Building the binary yourself</summary>
 
 ```
-pip install pyinstaller cairosvg Pillow
+pip install pyinstaller cairosvg Pillow miniupnpc
 make linux    # on Linux
 make windows  # on Windows
 ```

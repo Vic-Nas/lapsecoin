@@ -143,7 +143,12 @@ jobs:
       - name: Install Python dependencies
         run: |
           pip install -r requirements.txt
-          pip install pyinstaller cairosvg Pillow
+          # Not in requirements.txt: it's a C extension with no prebuilt
+          # wheels, so requiring it there breaks plain source installs on
+          # machines without a compiler (see git history). CI runners have
+          # one by default, so it's installed here instead, purely for the
+          # release binary; the app already runs fine without it either way.
+          pip install pyinstaller cairosvg Pillow miniupnpc
 
       - name: Install appimagetool
         run: |
@@ -204,7 +209,12 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install pyinstaller cairosvg Pillow
+          # Not in requirements.txt: it's a C extension with no prebuilt
+          # wheels, so requiring it there breaks plain source installs on
+          # machines without a compiler (see git history). CI runners have
+          # one by default, so it's installed here instead, purely for the
+          # release binary; the app already runs fine without it either way.
+          pip install pyinstaller cairosvg Pillow miniupnpc
 
       - name: Generate icons
         shell: pwsh
