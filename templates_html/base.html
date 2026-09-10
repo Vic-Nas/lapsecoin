@@ -268,9 +268,9 @@
     </a>
     <a class="rewards-badge{{ ' is-active' if rewards_remaining_lapse > 0 }}"
        {% if is_private %}href="/rewards"{% endif %}
-       title="Uptime rewards budget: {{ rewards_remaining_lapse|int }} LAPSE{{ ' (click to edit)' if is_private }}"
-       aria-label="Uptime rewards budget {{ rewards_remaining_lapse|int }} LAPSE">
-      <span class="rewards-label">Rewards: </span>{{ rewards_remaining_lapse|int }}
+       title="Uptime rewards: {{ (rewards_remaining_lapse|int ~ ' LAPSE budget left') if rewards_remaining_lapse > 0 else 'off' }}{{ ', click to configure' if is_private }}"
+       aria-label="Uptime rewards {{ (rewards_remaining_lapse|int ~ ' LAPSE budget left') if rewards_remaining_lapse > 0 else 'off' }}">
+      <span class="rewards-label">Rewards: </span>{{ rewards_remaining_lapse|int if rewards_remaining_lapse > 0 else "off" }}
     </a>
     <div class="masthead-title"><img src="/favicon.svg" alt="" width="24" height="24">LapseCoin</div>
     <nav class="mainnav">
