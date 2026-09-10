@@ -296,6 +296,9 @@
       <a href="/peers" class="{{ 'active' if nav_active == 'peers' }}">Peers</a><span class="sep">&middot;</span>
       <a href="/odds" class="{{ 'active' if nav_active == 'odds' }}">Odds</a><span class="sep">&middot;</span>
       <a href="/whitepaper" class="{{ 'active' if nav_active == 'whitepaper' }}">Whitepaper</a>
+      {% if is_private %}
+      <span class="sep">&middot;</span><a href="/settings" class="{{ 'active' if nav_active == 'settings' }}">Settings</a>
+      {% endif %}
     </nav>
     {% if update_checker and update_checker.severity %}
     <a class="version-alert" href="{{ update_checker.releases_url }}" target="_blank" rel="noopener"

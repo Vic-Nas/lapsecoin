@@ -467,6 +467,7 @@ def _shared_read_only_routes(app, node, pool, limiter,
             "address_lookup": "address", "distribution_bucket": "address",
             "peers": "peers", "odds": "odds",
             "whitepaper": "whitepaper", "send": "send", "rewards": "rewards",
+            "settings": "settings",
         }.get(endpoint)
         return {"is_private": is_private,
                 "private_port": private_port,
