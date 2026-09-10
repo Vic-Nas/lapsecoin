@@ -42,6 +42,7 @@ class DHTDiscovery:
         self.genesis_hash   = genesis_hash
         self.port           = port
         self.node_pubkey_hex = node_pubkey_hex
+        self.bootstrapped   = False  # set once dht_bootstrap_alert is seen
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -99,6 +100,7 @@ class DHTDiscovery:
                     log.debug("[dht] BEP44 put num_success=0")
             elif isinstance(a, lt.dht_bootstrap_alert):
                 log.info("[dht] bootstrap complete")
+                self.bootstrapped = True
 
     # ------------------------------------------------------------------
     # BEP44 put / get

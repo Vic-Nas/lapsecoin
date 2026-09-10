@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from peer_udp import (LAN_DISCOVERY_PORT, MT_GETINFO, MT_INFO, MT_PING, MT_PONG,
-                       MT_TX, UDPTransport, _decode, _encode)
+                       MT_TX, UDPTransport, _decode, _encode, probe_lan_ports)
 
 
 def _make_transport(on_tx):
@@ -185,7 +185,7 @@ def test_broadcast_discover_announces_own_port_on_discovery_socket():
     payload, target = sent[0]
     assert target == ("255.255.255.255", LAN_DISCOVERY_PORT)
     decoded = _decode(payload)
-    assert decoded == {"genesis": udp.genesis_hash, "port": 9999}
+    assert decoded == {"type": "announce", "genesis": udp.genesis_hash, "port": 9999}
 
 
 def test_broadcast_discover_noop_without_discovery_socket():
@@ -204,9 +204,9 @@ def test_disc_announce_from_lan_pings_announced_port():
                        on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
     pinged = []
     udp.ping = lambda addr: pinged.append(addr)
-    payload = _encode({"genesis": udp.genesis_hash, "port": 8444})
+    payload = _encode({"type": "announce", "genesis": udp.genesis_hash, "port": 8444})
 
-    udp._handle_disc_announce(payload, ("192.168.1.50", 8334))
+    udp._handle_disc_message(payload, ("192.168.1.50", 8334))
 
     assert pinged == ["192.168.1.50:8444"]
 
@@ -216,9 +216,9 @@ def test_disc_announce_wrong_genesis_ignored():
                        on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
     pinged = []
     udp.ping = lambda addr: pinged.append(addr)
-    payload = _encode({"genesis": "different", "port": 8444})
+    payload = _encode({"type": "announce", "genesis": "different", "port": 8444})
 
-    udp._handle_disc_announce(payload, ("192.168.1.50", 8334))
+    udp._handle_disc_message(payload, ("192.168.1.50", 8334))
 
     assert pinged == []
 
@@ -229,9 +229,9 @@ def test_disc_announce_from_own_ip_ignored():
     udp._local_ips = {"192.168.1.50"}
     pinged = []
     udp.ping = lambda addr: pinged.append(addr)
-    payload = _encode({"genesis": udp.genesis_hash, "port": 8444})
+    payload = _encode({"type": "announce", "genesis": udp.genesis_hash, "port": 8444})
 
-    udp._handle_disc_announce(payload, ("192.168.1.50", 8334))
+    udp._handle_disc_message(payload, ("192.168.1.50", 8334))
 
     assert pinged == []
 
@@ -241,9 +241,9 @@ def test_disc_announce_from_public_ip_ignored():
                        on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
     pinged = []
     udp.ping = lambda addr: pinged.append(addr)
-    payload = _encode({"genesis": udp.genesis_hash, "port": 8444})
+    payload = _encode({"type": "announce", "genesis": udp.genesis_hash, "port": 8444})
 
-    udp._handle_disc_announce(payload, ("8.8.8.8", 8334))
+    udp._handle_disc_message(payload, ("8.8.8.8", 8334))
 
     assert pinged == []
 
@@ -253,11 +253,100 @@ def test_disc_announce_bad_port_ignored():
                        on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
     pinged = []
     udp.ping = lambda addr: pinged.append(addr)
-    payload = _encode({"genesis": udp.genesis_hash, "port": "not-a-port"})
+    payload = _encode({"type": "announce", "genesis": udp.genesis_hash, "port": "not-a-port"})
 
-    udp._handle_disc_announce(payload, ("192.168.1.50", 8334))
+    udp._handle_disc_message(payload, ("192.168.1.50", 8334))
 
     assert pinged == []
+
+
+def test_disc_probe_gets_announce_reply():
+    """A node still picking its own port (probe_lan_ports) sends a bare
+    probe with no port of its own -- an already-running node must reply
+    with its own announce, not try to ping the prober (which has nothing
+    listening on a data port yet)."""
+    udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
+                       on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
+    pinged = []
+    udp.ping = lambda addr: pinged.append(addr)
+    sent = []
+    udp._disc_sock = MagicMock()
+    udp._disc_sock.sendto = lambda payload, target: sent.append((payload, target))
+    payload = _encode({"type": "probe", "genesis": udp.genesis_hash})
+
+    udp._handle_disc_message(payload, ("192.168.1.60", 51234))
+
+    assert pinged == []
+    assert len(sent) == 1
+    reply_payload, target = sent[0]
+    assert target == ("192.168.1.60", 51234)
+    assert _decode(reply_payload) == {"type": "announce", "genesis": udp.genesis_hash,
+                                      "port": 9999}
+
+
+def test_disc_probe_from_public_ip_ignored():
+    udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
+                       on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
+    udp._disc_sock = MagicMock()
+    payload = _encode({"type": "probe", "genesis": udp.genesis_hash})
+
+    udp._handle_disc_message(payload, ("8.8.8.8", 51234))
+
+    udp._disc_sock.sendto.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# probe_lan_ports: standalone pre-bind port negotiation.
+# ---------------------------------------------------------------------------
+
+def test_probe_lan_ports_collects_matching_replies():
+    genesis = "a" * 64
+    responder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    responder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    responder.bind(("0.0.0.0", 0))
+    responder.settimeout(2)
+
+    def respond_once():
+        data, sender = responder.recvfrom(2048)
+        parsed = _decode(data)
+        assert parsed == {"type": "probe", "genesis": genesis}
+        reply = _encode({"type": "announce", "genesis": genesis, "port": 8444})
+        responder.sendto(reply, sender)
+
+    t = threading.Thread(target=respond_once, daemon=True)
+    t.start()
+    # Point the probe at our own responder's port instead of the real
+    # LAN_DISCOVERY_PORT so the test doesn't depend on that port being free.
+    found = probe_lan_ports(genesis, wait=1.0, disc_port=responder.getsockname()[1])
+    t.join(timeout=2)
+    responder.close()
+
+    assert found == {8444}
+
+
+def test_probe_lan_ports_ignores_wrong_genesis():
+    responder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    responder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    responder.bind(("0.0.0.0", 0))
+    responder.settimeout(2)
+
+    def respond_once():
+        data, sender = responder.recvfrom(2048)
+        reply = _encode({"type": "announce", "genesis": "other-chain", "port": 8444})
+        responder.sendto(reply, sender)
+
+    t = threading.Thread(target=respond_once, daemon=True)
+    t.start()
+    found = probe_lan_ports("a" * 64, wait=1.0, disc_port=responder.getsockname()[1])
+    t.join(timeout=2)
+    responder.close()
+
+    assert found == set()
+
+
+def test_probe_lan_ports_empty_when_nobody_answers():
+    found = probe_lan_ports("a" * 64, wait=0.3, disc_port=59991)
+    assert found == set()
 
 
 # ---------------------------------------------------------------------------

@@ -55,6 +55,7 @@ GET_INTERVAL         = 60
 STAGE_FLUSH_INTERVAL = 15
 PUT_DELAY_LOCAL      = 30
 LAN_BROADCAST_INTERVAL = 60   # seconds between LAN broadcast discovery pings
+DHT_BOOTSTRAP_TIMEOUT  = 15   # max wait for DHT bootstrap before first query anyway
 
 PUNCH_ATTEMPTS       = 3     # how many relays to try when direct ping fails
 PUNCH_WAIT           = 2.5   # seconds to wait after punch before re-pinging
@@ -107,6 +108,13 @@ class Discovery:
 
     def run(self):
         self._load_peer_cache()
+        # Cached peers from a previous run are already known-good -- connect
+        # to them immediately rather than waiting on DHT bootstrap timing,
+        # which has nothing to do with them. Same for LAN peers: broadcast
+        # discovery doesn't touch the DHT at all, so there's no reason to
+        # wait on it either.
+        self._flush_candidates()
+        self.udp.broadcast_discover()
 
         ses, my_slot, my_offset = self._dht.start()
         alert_event = threading.Event()
@@ -129,7 +137,19 @@ class Discovery:
             if ip:
                 self.udp.our_external_addr = f"{ip}:{self.port}"
                 log.info("[peer] external addr seeded from HTTP  addr=%s:%d", ip, self.port)
-        time.sleep(15)
+
+        # Wait for the DHT routing table to settle before issuing the first
+        # query, so it isn't sent into an empty table -- but don't just
+        # sleep the full worst case: most of the time bootstrap finishes
+        # well under this, and firing get_all/get_peers the moment it does
+        # (rather than always waiting out a flat 15s) is exactly what makes
+        # the very first DHT lookup land sooner instead of on the next
+        # periodic retry a minute later.
+        bootstrap_deadline = time.monotonic() + DHT_BOOTSTRAP_TIMEOUT
+        while time.monotonic() < bootstrap_deadline and not self._dht.bootstrapped:
+            alert_event.wait(timeout=1)
+            alert_event.clear()
+            self._dht.process_alerts(ses)
 
         put_delay = PUT_DELAY_LOCAL + my_offset % 300
         now = time.monotonic()

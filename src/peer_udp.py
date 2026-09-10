@@ -53,6 +53,13 @@ Public interface
                                ping us back regardless of their own data
                                port, no DHT/NAT/punching needed
   .our_external_addr          best-known external ip:port (str or None)
+
+Module-level:
+  probe_lan_ports(genesis_hash)   standalone, run before choosing a data
+                                   port: returns ports other nodes on this
+                                   LAN are already using, so a second
+                                   machine here doesn't default onto one
+                                   already claimed
 """
 
 import ipaddress
@@ -93,7 +100,10 @@ PING_TIMEOUT     = 8.0    # seconds to wait for PONG
 # Announcing "I'm on port X" over this shared, well-known port lets nodes on
 # the same network segment find each other regardless of what data port
 # either one runs on.
-LAN_DISCOVERY_PORT = 8334
+# Deliberately well outside the 8333-and-a-few-up range a data port ends up
+# in after PORT_BIND_RETRIES fallback, so the two can never collide with
+# each other on one machine.
+LAN_DISCOVERY_PORT = 18334
 
 PORT_BIND_RETRIES = 5   # how many ascending ports to try if the requested one is taken
 
@@ -176,6 +186,56 @@ def _decode(raw: bytes) -> dict:
         return msgpack.unpackb(raw, raw=False)
     except ImportError:
         return json.loads(raw.decode())
+
+
+def probe_lan_ports(genesis_hash: str, wait: float = 1.5,
+                    disc_port: int = LAN_DISCOVERY_PORT) -> set[int]:
+    """Ask the local network "who's already running a node here" before
+    picking a data port to bind, so a second machine on the same LAN
+    doesn't default to a port another machine there is already using --
+    each still keeps its own distinct, independently port-forwardable
+    port. Standalone (no running UDPTransport needed): main.py calls this
+    before it has even chosen its own port yet.
+
+    Returns whatever data ports currently-running nodes with the same
+    genesis reply with. Best-effort: an empty result just means "nobody
+    answered in time" or broadcast doesn't reach on this network -- never
+    a reason to fail startup."""
+    found: set[int] = set()
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.bind(("0.0.0.0", 0))
+        sock.settimeout(0.5)
+    except OSError:
+        return found
+    try:
+        payload = _encode({"type": "probe", "genesis": genesis_hash})
+        sock.sendto(payload, ("255.255.255.255", disc_port))
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            try:
+                data, sender = sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                parsed = _decode(data)
+            except Exception:
+                continue
+            if not isinstance(parsed, dict) or parsed.get("genesis") != genesis_hash:
+                continue
+            if not _is_lan_source(sender[0]):
+                continue
+            port = parsed.get("port")
+            if isinstance(port, int) and 0 < port <= 65535:
+                found.add(port)
+    except OSError:
+        log.debug("[udp] LAN port probe failed", exc_info=True)
+    finally:
+        sock.close()
+    return found
 
 
 def _pack(msg_type: int, msg_id: int, chunk_idx: int,
@@ -496,7 +556,8 @@ class UDPTransport:
         if not self._disc_sock:
             return
         try:
-            payload = _encode({"genesis": self.genesis_hash, "port": self.port})
+            payload = _encode({"type": "announce", "genesis": self.genesis_hash,
+                               "port": self.port})
             self._disc_sock.sendto(payload, ("255.255.255.255", LAN_DISCOVERY_PORT))
         except OSError:
             log.debug("[udp] LAN discover broadcast failed", exc_info=True)
@@ -509,20 +570,35 @@ class UDPTransport:
                 continue
             except OSError:
                 break
-            self._executor.submit(self._handle_disc_announce, data, sender)
+            self._executor.submit(self._handle_disc_message, data, sender)
 
-    def _handle_disc_announce(self, data: bytes, sender: tuple):
+    def _handle_disc_message(self, data: bytes, sender: tuple):
         try:
             parsed = _decode(data)
         except Exception:
             return
         if not isinstance(parsed, dict) or parsed.get("genesis") != self.genesis_hash:
             return
-        port = parsed.get("port")
-        if not isinstance(port, int) or not (0 < port <= 65535):
-            return
         host = sender[0]
         if not _is_lan_source(host) or host in self._local_ips:
+            return
+
+        if parsed.get("type") == "probe":
+            # A node still choosing its own data port (probe_lan_ports, run
+            # before it has bound one) asking who's already active on this
+            # network. Reply with our own announce directly to it, even
+            # though it isn't listening on LAN_DISCOVERY_PORT itself --
+            # UDP replies go straight to the sender's actual (ip, port).
+            try:
+                reply = _encode({"type": "announce", "genesis": self.genesis_hash,
+                                 "port": self.port})
+                self._disc_sock.sendto(reply, sender)
+            except OSError:
+                pass
+            return
+
+        port = parsed.get("port")
+        if not isinstance(port, int) or not (0 < port <= 65535):
             return
         # Confirm reachability at the announced port over the ordinary
         # PING/PONG path -- ping() already admits a private-source PONG to

@@ -25,7 +25,7 @@ from discovery import Discovery
 from gossip import Gossip
 from node import Node
 from params import DB_PATH
-from peer_udp import UDPTransport
+from peer_udp import LAN_DISCOVERY_PORT, PORT_BIND_RETRIES, UDPTransport, probe_lan_ports
 from peerpool import PeerPool
 from syncer import Syncer
 from singleton_lock import SingleInstanceLock
@@ -269,8 +269,22 @@ def main():
                 discovery.enqueue_candidate(p)
         pool.touch(sender_addr)
 
+    # Ask the local network who's already running a node before claiming a
+    # data port -- otherwise two machines behind the same router could both
+    # default onto 8333, and only one of them can ever have that port
+    # forwarded through the router at a time. Best-effort and bounded
+    # (1.5s): no reply just means bind normally, same as always.
+    claimed_ports = probe_lan_ports(genesis["hash"])
+    data_port = args.port
+    while ((data_port in claimed_ports or data_port == LAN_DISCOVERY_PORT)
+           and data_port < args.port + PORT_BIND_RETRIES):
+        data_port += 1
+    if data_port != args.port:
+        log.info("[startup] port %d already active on this network, using %d instead",
+                 args.port, data_port)
+
     udp = UDPTransport(
-        port=args.port,
+        port=data_port,
         genesis_hash=genesis["hash"],
         on_block=on_block,
         on_tx=on_tx,
@@ -278,10 +292,10 @@ def main():
         pool=pool,
     )
     udp.start()
-    # udp.start() falls back to the next free port if args.port was already
-    # taken on this machine (e.g. a second node instance) -- everything
-    # downstream that needs to know our port uses the port actually bound,
-    # not the one originally requested.
+    # udp.start() falls back further still if data_port itself turns out to
+    # be taken on this machine (e.g. a second node instance, or a race with
+    # the LAN probe above) -- everything downstream that needs to know our
+    # port uses the port actually bound, not the one originally requested.
     port = udp.port
     log.info("[startup] UDP transport on port %d", port)
 
