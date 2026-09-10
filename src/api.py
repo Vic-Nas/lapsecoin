@@ -766,7 +766,7 @@ def _base_dir():
 # Public app factory  (port 8333)
 # ---------------------------------------------------------------------------
 
-def create_app(node, pool, private_port=8334, public_port=8333,
+def create_app(node, pool, private_port=8335, public_port=8333,
                update_checker=None, rewarder=None):
     app = Flask(__name__,
                 template_folder=os.path.join(_base_dir(), "templates_html"))
@@ -803,10 +803,10 @@ def create_app(node, pool, private_port=8334, public_port=8333,
 
 
 # ---------------------------------------------------------------------------
-# Private app factory  (port 8334, 127.0.0.1 only)
+# Private app factory  (port 8335, 127.0.0.1 only)
 # ---------------------------------------------------------------------------
 
-def create_private_app(node, pool, private_port=8334, public_port=8333,
+def create_private_app(node, pool, private_port=8335, public_port=8333,
                        update_checker=None, rewarder=None):
     """Full-featured app for local use. Never expose via Funnel or public port."""
     app = Flask(__name__,
