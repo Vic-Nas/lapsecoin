@@ -59,22 +59,39 @@
           fill="var(--accent)" text-anchor="end">self median{{ " (off scale)" if chart.own_clipped }}</text>
     {% endif %}
 
-    <polyline fill="none" stroke="var(--ink-dim)" stroke-width="1.25"
+    <polyline fill="none" stroke="var(--rule-lt)" stroke-width="1"
       points="{% for p in chart.points %}{{ p.x }},{{ p.y }} {% endfor %}"/>
 
+    {% for p in chart.points if p.in_band %}
+    <circle cx="{{ p.x }}" cy="{{ p.y }}" r="3" fill="{{ p.color }}">
+      <title>Block {{ p.height }}: {{ "%.1f"|format(p.seconds) }}s{{ " -- " ~ p.builder if p.builder }}</title>
+    </circle>
+    {% endfor %}
     {% for p in chart.points if not p.in_band %}
-    <circle cx="{{ p.x }}" cy="{{ p.y }}" r="3.5" fill="var(--paper)"
-            stroke="var(--rule-lt)" stroke-width="1.5">
-      <title>Block {{ p.height }}: {{ "%.1f"|format(p.seconds) }}s
+    <circle cx="{{ p.x }}" cy="{{ p.y }}" r="4.5" fill="var(--paper)"
+            stroke="{{ p.color }}" stroke-width="2">
+      <title>Block {{ p.height }}: {{ "%.1f"|format(p.seconds) }}s{{ " -- " ~ p.builder if p.builder }}
         ({{ "above" if p.clipped_high else "below" }} chart range, excluded from odds)</title>
     </circle>
     {% endfor %}
   </svg>
   </div>
+  {% if chart.legend %}
+  <div id="odds-legend" style="display:flex;flex-wrap:wrap;gap:.4rem 1rem;margin-top:.6rem">
+    {% for entry in chart.legend %}
+    <span style="display:inline-flex;align-items:center;gap:.35rem;font-size:.8rem;color:var(--ink-dim)">
+      <span style="width:9px;height:9px;border-radius:50%;background:{{ entry.color }};display:inline-block"></span>
+      {% if entry.label %}<span class="hash-short" style="display:inline;max-width:11ch" title="{{ entry.label }}">{{ entry.label[:10] }}&hellip;</span>{% else %}<span>Other</span>{% endif %}
+      <span style="color:var(--muted)">({{ entry.count }})</span>
+    </span>
+    {% endfor %}
+  </div>
+  {% endif %}
   <p class="stat-sub" style="margin-top:.4rem">
     Block interval is a proxy for the winning builder's real build time. Hollow points fall
     outside the 0.5x-2x median band (hover for the exact value); excluded from the odds
-    figure above, still shown here.
+    figure above, still shown here. Color marks the top 3 builders by block count in this
+    window; everyone else shares the muted "Other" color.
   </p>
 </div>
 <script>
@@ -99,13 +116,31 @@
       s += `<text x="${chart.width - 4}" y="${chart.own_y - 4}" font-size="10" fill="var(--accent)" text-anchor="end">self median${chart.own_clipped ? " (off scale)" : ""}</text>`;
     }
     const pts = chart.points.map(function (p) { return p.x + "," + p.y; }).join(" ");
-    s += `<polyline fill="none" stroke="var(--ink-dim)" stroke-width="1.25" points="${pts}"/>`;
+    s += `<polyline fill="none" stroke="var(--rule-lt)" stroke-width="1" points="${pts}"/>`;
+    chart.points.filter(function (p) { return p.in_band; }).forEach(function (p) {
+      const label = p.builder ? " -- " + p.builder : "";
+      s += `<circle cx="${p.x}" cy="${p.y}" r="3" fill="${p.color}">` +
+           `<title>Block ${p.height}: ${fmt1(p.seconds)}s${label}</title></circle>`;
+    });
     chart.points.filter(function (p) { return !p.in_band; }).forEach(function (p) {
       const dir = p.clipped_high ? "above" : "below";
-      s += `<circle cx="${p.x}" cy="${p.y}" r="3.5" fill="var(--paper)" stroke="var(--rule-lt)" stroke-width="1.5">` +
-           `<title>Block ${p.height}: ${fmt1(p.seconds)}s (${dir} chart range, excluded from odds)</title></circle>`;
+      const label = p.builder ? " -- " + p.builder : "";
+      s += `<circle cx="${p.x}" cy="${p.y}" r="4.5" fill="var(--paper)" stroke="${p.color}" stroke-width="2">` +
+           `<title>Block ${p.height}: ${fmt1(p.seconds)}s${label} (${dir} chart range, excluded from odds)</title></circle>`;
     });
     return s;
+  }
+
+  function renderLegend(legend) {
+    if (!legend || !legend.length) return "";
+    return legend.map(function (entry) {
+      const labelHtml = entry.label
+        ? `<span class="hash-short" style="display:inline;max-width:11ch" title="${entry.label}">${entry.label.slice(0, 10)}&hellip;</span>`
+        : "<span>Other</span>";
+      return `<span style="display:inline-flex;align-items:center;gap:.35rem;font-size:.8rem;color:var(--ink-dim)">` +
+             `<span style="width:9px;height:9px;border-radius:50%;background:${entry.color};display:inline-block"></span>` +
+             `${labelHtml}<span style="color:var(--muted)">(${entry.count})</span></span>`;
+    }).join("");
   }
 
   async function refresh() {
@@ -127,6 +162,9 @@
 
       const svg = document.getElementById("odds-svg");
       if (svg) svg.innerHTML = renderChart(data.chart, data.median);
+
+      const legendEl = document.getElementById("odds-legend");
+      if (legendEl) legendEl.innerHTML = renderLegend(data.chart.legend);
     } catch (e) { /* keep last good render on a transient failure */ }
   }
   refresh();

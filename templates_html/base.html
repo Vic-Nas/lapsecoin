@@ -18,6 +18,17 @@
     --gain:     #2f5c33;
     --loss:     #7a2222;
     --live:     #2f4f6c;
+
+    /* Odds-page builder identity. Capped at 3: validated colorblind-safe
+       and normal-vision-distinguishable for *any* pair landing next to
+       each other (not just adjacent ones), which a scatter of builders
+       across time requires -- a 4th slot fails that bar even with a
+       legend. Every other builder folds into --series-other instead of
+       a 4th generated color. */
+    --series-1:     #2a78d6;
+    --series-2:     #eb6834;
+    --series-3:     #1baf7a;
+    --series-other: var(--rule-lt);
     --serif: "Times New Roman", Times, Georgia, "Liberation Serif", serif;
     --mono:  "Courier New", Courier, "Liberation Mono", monospace;
     --container: 900px;

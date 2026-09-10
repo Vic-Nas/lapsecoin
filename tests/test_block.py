@@ -487,3 +487,81 @@ class TestAssemble:
         g = genesis()
         b = block_mod.assemble(g, [], address(0), block_mod.VDF_ITERATIONS)
         assert b["previous_hash"] == g["hash"]
+
+
+class TestRaceWindowBuilders:
+    """race_window/race_odds must carry the builder through each row, since
+    the odds page colors points by builder to show dominance."""
+
+    def _chain(self, builder_indexes):
+        chain = [genesis()]
+        for h, idx in enumerate(builder_indexes, start=1):
+            chain.append(make_block(h, chain[-1]["hash"], [], builder_index=idx))
+        return chain
+
+    def test_race_window_includes_builder(self):
+        chain = self._chain([0, 1, 0])
+        window = block_mod.race_window(chain)
+        assert [b for _, _, b in window] == [address(0), address(1), address(0)]
+
+    def test_race_odds_carries_builder_into_rows(self):
+        chain = self._chain([0, 1, 0])
+        race = block_mod.race_odds(chain, own_seconds=None)
+        assert [b for _, _, _, b in race["window"]] == [address(0), address(1), address(0)]
+
+
+class TestRaceChartBuilderColors:
+    """_race_chart caps identity colors at 3 builders (see api.py's
+    _BUILDER_COLOR_SLOTS docstring for why: a validated categorical palette
+    only holds a normal-vision-safe distinction for every pair, not just
+    adjacent ones, up to 3 slots) and folds the rest into one "other" color
+    plus a legend entry, rather than generating unbounded colors."""
+
+    def _chain(self, builder_indexes):
+        chain = [genesis()]
+        for h, idx in enumerate(builder_indexes, start=1):
+            chain.append(make_block(h, chain[-1]["hash"], [], builder_index=idx))
+        return chain
+
+    def test_top_3_builders_get_distinct_colors(self):
+        import api as api_mod
+        # builder 0 wins 3 blocks, 1 wins 2, 2 wins 1 -- all fit in the top 3.
+        chain = self._chain([0, 1, 0, 1, 0, 2])
+        race = block_mod.race_odds(chain, own_seconds=None)
+        chart = api_mod._race_chart(race)
+
+        colors_by_builder = {p["builder"]: p["color"] for p in chart["points"]}
+        assert colors_by_builder[address(0)] == "var(--series-1)"
+        assert colors_by_builder[address(1)] == "var(--series-2)"
+        assert colors_by_builder[address(2)] == "var(--series-3)"
+        assert {e["label"] for e in chart["legend"]} == {address(0), address(1), address(2)}
+
+    def test_fourth_and_later_builders_fold_into_other(self):
+        import api as api_mod
+        # Four distinct builders, one block each -- a 4th generated color
+        # would fail the normal-vision floor (see dataviz palette check),
+        # so the 4th must share the "other" color instead.
+        chain = self._chain([0, 1, 2, 3])
+        race = block_mod.race_odds(chain, own_seconds=None)
+        chart = api_mod._race_chart(race)
+
+        colors_used = {p["color"] for p in chart["points"]}
+        assert colors_used == {"var(--series-1)", "var(--series-2)",
+                               "var(--series-3)", "var(--series-other)"}
+        other_entries = [e for e in chart["legend"] if e["color"] == "var(--series-other)"]
+        assert len(other_entries) == 1
+        assert other_entries[0]["label"] is None
+        assert other_entries[0]["count"] == 1
+
+    def test_ranking_by_frequency_not_first_seen(self):
+        """The most-active builder gets slot 1 even if it appears later in
+        the window -- ranking is by count, not by first appearance."""
+        import api as api_mod
+        # builder 1 appears once first, then builder 0 dominates with 4 blocks.
+        chain = self._chain([1, 0, 0, 0, 0])
+        race = block_mod.race_odds(chain, own_seconds=None)
+        chart = api_mod._race_chart(race)
+
+        colors_by_builder = {p["builder"]: p["color"] for p in chart["points"]}
+        assert colors_by_builder[address(0)] == "var(--series-1)"
+        assert colors_by_builder[address(1)] == "var(--series-2)"

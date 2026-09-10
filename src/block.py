@@ -85,7 +85,7 @@ def race_window(chain):
     single most recent vdf_iterations regime so seconds stay comparable
     (iterations only ratchet upward, see VDF_ADJUST_INTERVAL).
 
-    Returns a list of (height, interval_seconds) tuples, oldest first.
+    Returns a list of (height, interval_seconds, builder) tuples, oldest first.
     """
     n = len(chain)
     if n < 2:
@@ -96,7 +96,8 @@ def race_window(chain):
     for h in range(n - 1, start - 1, -1):
         if chain[h].get("vdf_iterations") != current_iterations:
             break
-        rows.append((h, chain[h]["timestamp"] - chain[h - 1]["timestamp"]))
+        rows.append((h, chain[h]["timestamp"] - chain[h - 1]["timestamp"],
+                    chain[h].get("builder") or ""))
     rows.reverse()
     return rows
 
@@ -111,7 +112,7 @@ def race_odds(chain, own_seconds):
     never dropped -- excluded from the odds calculation, still shown.
 
     Returns None if there's no window yet. Otherwise:
-      {"window": [(height, interval_seconds, in_band), ...],
+      {"window": [(height, interval_seconds, in_band, builder), ...],
        "median": float, "excluded": int,
        "own_seconds": float or None, "odds_pct": float or None}
     odds_pct is the percentage of in-band intervals own_seconds beats.
@@ -119,14 +120,14 @@ def race_odds(chain, own_seconds):
     window = race_window(chain)
     if not window:
         return None
-    median = statistics.median(i for _, i in window)
+    median = statistics.median(i for _, i, _ in window)
     lo, hi = median / 2, median * 2
-    rows = [(h, i, lo <= i <= hi) for h, i in window]
-    excluded = sum(1 for _, _, in_band in rows if not in_band)
+    rows = [(h, i, lo <= i <= hi, b) for h, i, b in window]
+    excluded = sum(1 for _, _, in_band, _ in rows if not in_band)
 
     odds_pct = None
     if own_seconds is not None:
-        in_band = [i for _, i, ok in rows if ok]
+        in_band = [i for _, i, ok, _ in rows if ok]
         if in_band:
             beaten = sum(1 for i in in_band if i > own_seconds)
             odds_pct = 100.0 * beaten / len(in_band)

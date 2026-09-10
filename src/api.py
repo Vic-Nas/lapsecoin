@@ -330,12 +330,28 @@ _CHART_PAD_L, _CHART_PAD_T, _CHART_PAD_B = 46, 10, 22
 
 _TICK_COUNT = 5  # labeled horizontal gridlines, evenly spaced across the axis
 
+# Builder identity colors, capped at 3: any two points on this chart can end
+# up adjacent regardless of building order (it's effectively a scatter over
+# time, not a fixed-order series), and a validated categorical palette only
+# holds a colorblind- and normal-vision-safe distinction for *every* pair,
+# not just neighboring ones, up to 3 slots -- a 4th fails the normal-vision
+# floor even with a legend (see dataviz skill's palette validator). Every
+# other builder folds into "other" instead of a generated 4th-plus color.
+_BUILDER_COLOR_SLOTS = ["var(--series-1)", "var(--series-2)", "var(--series-3)"]
+_OTHER_COLOR = "var(--series-other)"
+
 
 def _race_chart(race):
     """Precompute SVG pixel geometry for the race-odds chart.
 
     Axis range is adaptive: it hugs the in-band data (plus a small
     margin), so out-of-band points clip to the plot edge instead.
+
+    Points are colored by builder to make dominance visible: the top 3
+    builders (by block count in this window) each get a fixed, validated
+    color; everyone else shares one neutral "other" color plus a legend
+    entry, rather than an unbounded set of generated colors -- see
+    _BUILDER_COLOR_SLOTS.
     """
     rows = race["window"]
     n = len(rows)
@@ -344,8 +360,8 @@ def _race_chart(race):
     median = race["median"]
     own_seconds = race["own_seconds"]
 
-    in_band_values = [s for _, s, ok in rows if ok]
-    domain = list(in_band_values) or [s for _, s, _ in rows]
+    in_band_values = [s for _, s, ok, _ in rows if ok]
+    domain = list(in_band_values) or [s for _, s, _, _ in rows]
     if own_seconds is not None:
         domain.append(own_seconds)
     data_lo, data_hi = min(domain), max(domain)
@@ -361,10 +377,24 @@ def _race_chart(race):
         frac = (clamped - axis_lo) / (axis_hi - axis_lo)
         return _CHART_PAD_T + plot_h - frac * plot_h
 
+    builder_counts = {}
+    for _, _, _, builder in rows:
+        if builder:
+            builder_counts[builder] = builder_counts.get(builder, 0) + 1
+    top_builders = sorted(builder_counts, key=builder_counts.get, reverse=True)[:3]
+    color_by_builder = {b: _BUILDER_COLOR_SLOTS[i] for i, b in enumerate(top_builders)}
+
     points = [{"x": round(x_at(idx), 1), "y": round(y_at(seconds), 1),
                "in_band": in_band, "height": h, "seconds": seconds,
-               "clipped_high": seconds > axis_hi, "clipped_low": seconds < axis_lo}
-              for idx, (h, seconds, in_band) in enumerate(rows)]
+               "clipped_high": seconds > axis_hi, "clipped_low": seconds < axis_lo,
+               "builder": builder, "color": color_by_builder.get(builder, _OTHER_COLOR)}
+              for idx, (h, seconds, in_band, builder) in enumerate(rows)]
+
+    legend = [{"label": b, "color": color_by_builder[b], "count": builder_counts[b]}
+              for b in top_builders]
+    other_count = sum(c for b, c in builder_counts.items() if b not in color_by_builder)
+    if other_count:
+        legend.append({"label": None, "color": _OTHER_COLOR, "count": other_count})
 
     own_y = own_clipped = None
     if own_seconds is not None:
@@ -379,7 +409,7 @@ def _race_chart(race):
             "median_y": round(y_at(median), 1), "ticks": ticks,
             "width": _CHART_W, "height": _CHART_H,
             "plot_top": _CHART_PAD_T, "plot_bottom": _CHART_PAD_T + plot_h,
-            "axis_lo": axis_lo, "axis_hi": axis_hi}
+            "axis_lo": axis_lo, "axis_hi": axis_hi, "legend": legend}
 
 
 def _default_send_outputs(pool):
