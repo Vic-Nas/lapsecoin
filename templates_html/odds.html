@@ -59,14 +59,16 @@
           fill="var(--accent)" text-anchor="end">self median{{ " (off scale)" if chart.own_clipped }}</text>
     {% endif %}
 
-    <polyline fill="none" stroke="var(--rule-lt)" stroke-width="1"
-      points="{% for p in chart.points %}{{ p.x }},{{ p.y }} {% endfor %}"/>
-
-    {% for p in chart.points if p.in_band %}
-    <circle cx="{{ p.x }}" cy="{{ p.y }}" r="3" fill="{{ p.color }}">
+    {% for p in chart.points %}
+    {% if not loop.first %}
+    {% set prev = chart.points[loop.index0 - 1] %}
+    <line x1="{{ prev.x }}" y1="{{ prev.y }}" x2="{{ p.x }}" y2="{{ p.y }}"
+          stroke="{{ p.color }}" stroke-width="1.75">
       <title>Block {{ p.height }}: {{ "%.1f"|format(p.seconds) }}s{{ " -- " ~ p.builder if p.builder }}</title>
-    </circle>
+    </line>
+    {% endif %}
     {% endfor %}
+
     {% for p in chart.points if not p.in_band %}
     <circle cx="{{ p.x }}" cy="{{ p.y }}" r="4.5" fill="var(--paper)"
             stroke="{{ p.color }}" stroke-width="2">
@@ -115,12 +117,12 @@
       s += `<line x1="${x0}" y1="${chart.own_y}" x2="${chart.width}" y2="${chart.own_y}" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="5,4"/>`;
       s += `<text x="${chart.width - 4}" y="${chart.own_y - 4}" font-size="10" fill="var(--accent)" text-anchor="end">self median${chart.own_clipped ? " (off scale)" : ""}</text>`;
     }
-    const pts = chart.points.map(function (p) { return p.x + "," + p.y; }).join(" ");
-    s += `<polyline fill="none" stroke="var(--rule-lt)" stroke-width="1" points="${pts}"/>`;
-    chart.points.filter(function (p) { return p.in_band; }).forEach(function (p) {
+    chart.points.forEach(function (p, i) {
+      if (i === 0) return;
+      const prev = chart.points[i - 1];
       const label = p.builder ? " -- " + p.builder : "";
-      s += `<circle cx="${p.x}" cy="${p.y}" r="3" fill="${p.color}">` +
-           `<title>Block ${p.height}: ${fmt1(p.seconds)}s${label}</title></circle>`;
+      s += `<line x1="${prev.x}" y1="${prev.y}" x2="${p.x}" y2="${p.y}" stroke="${p.color}" stroke-width="1.75">` +
+           `<title>Block ${p.height}: ${fmt1(p.seconds)}s${label}</title></line>`;
     });
     chart.points.filter(function (p) { return !p.in_band; }).forEach(function (p) {
       const dir = p.clipped_high ? "above" : "below";
