@@ -57,6 +57,21 @@ PUT_DELAY_LOCAL      = 30
 LAN_BROADCAST_INTERVAL = 60   # seconds between LAN broadcast discovery pings
 DHT_BOOTSTRAP_TIMEOUT  = 15   # max wait for DHT bootstrap before first query anyway
 
+# BEP5 torrent announce (BitTorrent's normal "I'm here" for this genesis's
+# swarm) is a cheap, ordinary announce_peer call -- nothing like BEP44's
+# mutable-item put, which needs the staggered PUT_DELAY_LOCAL/jitter to
+# avoid every node's write landing on the DHT at once. Tying it to that same
+# once-an-hour cadence (as it used to be) meant a fresh node didn't tell the
+# swarm it existed for up to PUT_DELAY_LOCAL + up to 300s of jitter, then
+# not again for another hour -- real BitTorrent clients re-announce every
+# few minutes, not hourly.
+TORRENT_ANNOUNCE_INTERVAL = 300
+
+# How often to log where discovery stands. Without this, a node with zero
+# peers just goes quiet after the startup burst -- indistinguishable from
+# hung, same problem the VDF wait had before it got a heartbeat too.
+STATUS_LOG_INTERVAL = 60
+
 PUNCH_ATTEMPTS       = 3     # how many relays to try when direct ping fails
 PUNCH_WAIT           = 2.5   # seconds to wait after punch before re-pinging
 
@@ -154,14 +169,17 @@ class Discovery:
         put_delay = PUT_DELAY_LOCAL + my_offset % 300
         now = time.monotonic()
 
-        last_flush = now - STAGE_FLUSH_INTERVAL
-        last_get   = now
-        last_put   = now - PUT_REFRESH_INTERVAL + put_delay
-        last_save  = now
-        last_lan   = now - LAN_BROADCAST_INTERVAL
+        last_flush    = now - STAGE_FLUSH_INTERVAL
+        last_get      = now
+        last_put      = now - PUT_REFRESH_INTERVAL + put_delay
+        last_announce = now
+        last_save     = now
+        last_lan      = now - LAN_BROADCAST_INTERVAL
+        last_status   = now - STATUS_LOG_INTERVAL
 
         self._dht.get_all(ses, my_slot)
         self._dht.torrent_get_peers(ses)
+        self._dht.torrent_announce(ses)   # own cadence -- see TORRENT_ANNOUNCE_INTERVAL
         last_get = time.monotonic()
 
         while True:
@@ -191,14 +209,25 @@ class Discovery:
                 if ext:
                     my_addr = ext if ":" in ext else f"{ext}:{self.port}"
                     self._dht.put(ses, my_slot, my_addr)
-                    self._dht.torrent_announce(ses)
                 last_put = now
+
+            if now - last_announce >= TORRENT_ANNOUNCE_INTERVAL:
+                self._dht.torrent_announce(ses)
+                last_announce = now
 
             self.pool.evict_stale()
 
             if now - last_lan >= LAN_BROADCAST_INTERVAL and not at_max:
                 self.udp.broadcast_discover()
+                log.debug("[peer] LAN broadcast sent")
                 last_lan = now
+
+            if now - last_status >= STATUS_LOG_INTERVAL:
+                with self._lock:
+                    queued = len(self._candidates)
+                log.info("[discovery] peers=%d  candidates_queued=%d",
+                         self.pool.count(), queued)
+                last_status = now
 
             if now - last_save >= SAVE_INTERVAL:
                 self._save_peer_cache()

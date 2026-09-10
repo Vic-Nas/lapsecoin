@@ -42,8 +42,22 @@ def _map_port(port, description):
             log.debug("[upnp] no UPnP-capable router found")
             return
         u.selectigd()
-        u.addportmapping(port, "TCP", u.lanaddr, port, description, "")
-        log.info("[upnp] mapped external port %d -> %s:%d", port, u.lanaddr, port)
+        # UDP is the actual P2P transport (UDPTransport) on this port number;
+        # TCP only serves the web UI. Mapping TCP alone -- the original
+        # bug here -- left every peer connection depending purely on hole
+        # punching, never actually opening the port the protocol runs on.
+        mapped = []
+        for proto in ("UDP", "TCP"):
+            try:
+                u.addportmapping(port, proto, u.lanaddr, port, description, "")
+                mapped.append(proto)
+            except Exception:
+                log.debug("[upnp] %s mapping failed", proto, exc_info=True)
+        if mapped:
+            log.info("[upnp] mapped external port %d (%s) -> %s:%d",
+                     port, "+".join(mapped), u.lanaddr, port)
+        else:
+            log.debug("[upnp] no protocol could be mapped")
     except Exception as e:
         log.debug("[upnp] port mapping failed (harmless, node runs fine "
                   "without it): %s", e)
