@@ -21,7 +21,7 @@ Public app  (default port 8333, externally reachable):
     GET  /api/info
          {"height", "tip_hash", "genesis_hash", "mempool_size",
           "address", "peer_count", "total_minted", "can_mint",
-          "block_reward", "block_time_diff"}
+          "block_reward", "block_time_ratio"}
 
     GET  /api/block/<height>          full block object or {"error": "not found"}
     GET  /api/tx/<hash>               transaction object (confirmed or mempool),

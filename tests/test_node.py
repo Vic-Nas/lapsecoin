@@ -229,21 +229,21 @@ class TestSimpleAccessors:
         node, *_ = node_env
         assert node.get_info()["height"] == 0
 
-    def test_block_time_diff_is_none_before_any_build(self, node_env):
+    def test_block_time_ratio_is_none_before_any_build(self, node_env):
         node, *_ = node_env
-        assert node.get_info()["block_time_diff"] is None
+        assert node.get_info()["block_time_ratio"] is None
 
-    def test_block_time_diff_is_none_with_only_genesis_even_if_own_builds_exist(self, node_env):
+    def test_block_time_ratio_is_none_with_only_genesis_even_if_own_builds_exist(self, node_env):
         """No chain-side median is possible with just genesis (no block-to-
         block delta exists yet), so the comparison has nothing to compare
         against even though this node has real build history."""
         node, *_ = node_env
         node._own_build_seconds.append(130.0)
-        assert node.get_info()["block_time_diff"] is None
+        assert node.get_info()["block_time_ratio"] is None
 
-    def test_block_time_diff_compares_own_median_to_chain_median(self, node_env):
-        """block_time_diff must be this node's own median build time minus
-        the chain's own recent median block-to-block time -- not this
+    def test_block_time_ratio_compares_own_median_to_chain_median(self, node_env):
+        """block_time_ratio must be this node's own median build time divided
+        by the chain's own recent median block-to-block time -- not this
         node's latest build vs its own history, and not tied to whichever
         node happened to build the current tip."""
         node, *_ = node_env
@@ -256,9 +256,9 @@ class TestSimpleAccessors:
         node.view = NodeView(cs)
         for seconds in [130.0] * 10:
             node._own_build_seconds.append(seconds)
-        assert node.get_info()["block_time_diff"] == pytest.approx(130.0 - 150.0)
+        assert node.get_info()["block_time_ratio"] == pytest.approx(130.0 / 150.0)
 
-    def test_block_time_diff_window_caps_at_30(self, node_env):
+    def test_block_time_ratio_window_caps_at_30(self, node_env):
         node, *_ = node_env
         for seconds in [100.0] * 40:
             node._own_build_seconds.append(seconds)

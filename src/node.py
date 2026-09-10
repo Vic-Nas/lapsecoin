@@ -173,7 +173,7 @@ class Node:
 
     def _load_own_build_seconds(self):
         """Restore _own_build_seconds across restarts, so the odds page and
-        own_block_time_diff() don't sit empty for up to 30 cycles (an hour)
+        own_block_time_ratio() don't sit empty for up to 30 cycles (an hour)
         after every restart. Best-effort: any parse failure just starts
         fresh, same as a node that's never built before."""
         raw = self.storage.get_meta(self._OWN_BUILD_SECONDS_META_KEY)
@@ -231,21 +231,21 @@ class Node:
             return None
         return statistics.median(self._own_build_seconds)
 
-    def own_block_time_diff(self):
-        """This node's own median VDF build time vs. the chain's own recent
-        median block-to-block time (block_mod's BLOCK_TIME_MEDIAN_WINDOW,
-        whoever actually built each of those blocks). Positive means this
-        node is running slower than the network's recent real pace. None
-        until this node has completed a build, or the chain has too few
-        blocks for a chain-side median."""
+    def own_block_time_ratio(self):
+        """This node's own median VDF build time as a ratio of the chain's
+        own recent median block-to-block time (block_mod's
+        BLOCK_TIME_MEDIAN_WINDOW, whoever actually built each of those
+        blocks). Above 1 means this node is running slower than the
+        network's recent real pace. None until this node has completed a
+        build, or the chain has too few blocks for a chain-side median."""
         own_median = self.own_vdf_median()
         if own_median is None:
             return None
         chain = self.view.chain
         stats = block_mod.block_time_stats(chain, len(chain) - 1)
-        if stats is None:
+        if stats is None or not stats["median"]:
             return None
-        return own_median - stats["median"]
+        return own_median / stats["median"]
 
     def get_info(self):
         v = self.view
@@ -259,7 +259,7 @@ class Node:
             "total_minted": v.state.total_minted,
             "can_mint":     v.state.compute_can_mint(),
             "block_reward": v.state.compute_block_reward(),
-            "block_time_diff": self.own_block_time_diff(),
+            "block_time_ratio": self.own_block_time_ratio(),
         }
 
     def start(self, kek):

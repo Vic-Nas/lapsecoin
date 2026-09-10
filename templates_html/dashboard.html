@@ -3,8 +3,8 @@
 <div class="stats">
   <div class="stat">
     <a id="live-height-link" href="/explorer/block/{{ info.height }}"><div class="stat-label">Height</div><div class="stat-value" id="live-height">{{ info.height }}</div></a>
-    {% if info.block_time_diff is not none %}
-    <div style="color:{{ 'var(--red)' if info.block_time_diff > 0 else 'var(--green)' }};font-size:.75rem" id="live-block-time-diff">{{ "+" if info.block_time_diff > 0 }}{{ "%.0f" | format(info.block_time_diff) }}s vs chain median</div>
+    {% if info.block_time_ratio is not none %}
+    <div style="color:{{ 'var(--red)' if info.block_time_ratio > 1 else 'var(--green)' }};font-size:.75rem" id="live-block-time-diff">{{ "%.1f" | format(info.block_time_ratio) }}x current median</div>
     {% else %}
     <div style="color:var(--muted);font-size:.75rem" id="live-block-time-diff">no builds yet</div>
     {% endif %}
@@ -77,12 +77,12 @@
         (info.total_minted / SUPPLY_CAP * 100).toFixed(4) + "% of 21M cap";
       document.getElementById("live-reward").textContent = "+" + fmtBalance(info.block_reward);
       const diffEl = document.getElementById("live-block-time-diff");
-      if (info.block_time_diff === null) {
+      if (info.block_time_ratio === null) {
         diffEl.textContent = "no builds yet";
         diffEl.style.color = "var(--muted)";
       } else {
-        diffEl.textContent = (info.block_time_diff > 0 ? "+" : "") + info.block_time_diff.toFixed(0) + "s vs chain median";
-        diffEl.style.color = info.block_time_diff > 0 ? "var(--red)" : "var(--green)";
+        diffEl.textContent = info.block_time_ratio.toFixed(1) + "x current median";
+        diffEl.style.color = info.block_time_ratio > 1 ? "var(--red)" : "var(--green)";
       }
 
       const txBody = document.getElementById("live-recent-txs");
