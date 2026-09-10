@@ -87,6 +87,7 @@ from flask_limiter.util import get_remote_address
 
 import block as block_mod
 import crypto as crypto_mod
+import node as node_mod
 import state as state_mod
 import tx as tx_mod
 from params import TICKS_PER_LAPSE, SUPPLY_CAP
@@ -835,14 +836,22 @@ def create_private_app(node, pool, private_port=8334, public_port=8333,
     @app.route("/rewards", methods=["GET", "POST"])
     def rewards():
         ctx = dict(title="Rewards", csrf_token=csrf_token,
-                   alert_ok="", alert_err="", rewarder_available=rewarder is not None)
-        if rewarder is None:
-            return render_template("rewards.html", **ctx)
+                   alert_ok="", alert_err="", rewarder_available=rewarder is not None,
+                   fairness_alert_ok="",
+                   fairness_enabled=node.fairness_enabled(),
+                   fairness_win_rate=node.fairness_win_rate(),
+                   fairness_window=node_mod.FAIRNESS_WIN_HISTORY,
+                   fairness_trigger_pct=int(node_mod.FAIRNESS_WIN_RATE_TRIGGER * 100),
+                   fairness_wait_cap=node_mod.FAIRNESS_WAIT_CAP_SECONDS)
 
         if request.method == "POST":
             if not secrets.compare_digest(request.form.get("csrf_token", ""), csrf_token):
                 ctx["alert_err"] = "Session expired; reload the page and try again."
-            else:
+            elif request.form.get("action") == "fairness":
+                node.set_fairness_enabled(request.form.get("fairness_enabled") == "1")
+                ctx["fairness_enabled"] = node.fairness_enabled()
+                ctx["fairness_alert_ok"] = "Settings saved."
+            elif rewarder is not None:
                 budget_raw = request.form.get("budget_lapse", "").strip()
                 try:
                     new_budget = float(budget_raw)
@@ -854,9 +863,10 @@ def create_private_app(node, pool, private_port=8334, public_port=8333,
                 except ValueError:
                     ctx["alert_err"] = "Budget must be a non-negative number."
 
-        status = rewarder.status()
-        ctx["remaining_lapse"] = status["remaining_ticks"] / TICKS_PER_LAPSE
-        ctx["pending"] = status["pending"]
+        if rewarder is not None:
+            status = rewarder.status()
+            ctx["remaining_lapse"] = status["remaining_ticks"] / TICKS_PER_LAPSE
+            ctx["pending"] = status["pending"]
         return render_template("rewards.html", **ctx)
 
     @app.route("/send", methods=["GET", "POST"])

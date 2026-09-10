@@ -2,6 +2,33 @@
 {% block content %}
 <h2>Rewards</h2>
 
+{% if fairness_alert_ok %}<div class="alert alert-ok">{{ fairness_alert_ok }}</div>{% endif %}
+
+<div class="card">
+  <div class="card-title">Fairness throttle</div>
+  <div class="stat-label" style="margin-bottom:.75rem">
+    On a young network, a real hardware edge can win nearly every block just by
+    finishing so far ahead that no one else is even in the running yet. When this
+    node's own win rate over its last {{ fairness_window }} blocks hits {{ fairness_trigger_pct }}%,
+    it holds its finished block back for up to {{ fairness_wait_cap }}s, or until a
+    competing block shows up, whichever comes first, before broadcasting. Stops
+    throttling on its own the moment win rate drops back down. On by default.
+  </div>
+  <form method="POST">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="action" value="fairness">
+    <div class="form-group">
+      <label><input type="checkbox" name="fairness_enabled" value="1"
+             {{ "checked" if fairness_enabled }} style="width:auto;margin-right:.4rem">
+             Enabled</label>
+    </div>
+    <div class="stat-sub" style="margin-bottom:.5rem">
+      Current win rate: {{ "%.0f%%"|format(fairness_win_rate * 100) if fairness_win_rate is not none else "not enough data yet" }}
+    </div>
+    <button type="submit">Save</button>
+  </form>
+</div>
+
 {% if not rewarder_available %}
 <div class="card">
   <div class="card-title">Unavailable</div>
