@@ -208,6 +208,7 @@ def probe_lan_ports(genesis_hash: str, wait: float = 1.5,
         sock.bind(("0.0.0.0", 0))
         sock.settimeout(0.5)
     except OSError:
+        log.debug("[udp] LAN port probe socket setup failed", exc_info=True)
         return found
     try:
         payload = _encode({"type": "probe", "genesis": genesis_hash})

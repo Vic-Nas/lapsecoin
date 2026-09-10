@@ -274,7 +274,13 @@ def main():
     # default onto 8333, and only one of them can ever have that port
     # forwarded through the router at a time. Best-effort and bounded
     # (1.5s): no reply just means bind normally, same as always.
+    log.info("[startup] checking this network for other LapseCoin nodes...")
     claimed_ports = probe_lan_ports(genesis["hash"])
+    if claimed_ports:
+        log.info("[startup] found node(s) already using port(s): %s",
+                 sorted(claimed_ports))
+    else:
+        log.info("[startup] no other nodes found on this network")
     data_port = args.port
     while ((data_port in claimed_ports or data_port == LAN_DISCOVERY_PORT)
            and data_port < args.port + PORT_BIND_RETRIES):
