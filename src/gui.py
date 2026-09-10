@@ -48,27 +48,50 @@ def _resource_dir():
     return candidates[0] if candidates else "."
 
 
-_ICON_SVG = os.path.join(_resource_dir(), "lapsecoin.svg")
+_ICON_PNG = os.path.join(_resource_dir(), "lapsecoin.png")
 
 
 def _apply_icon(root):
-    """Rasterize the repo's lapsecoin.svg in memory and set it as the window
-    icon. No generated asset checked into the repo or written to disk --
-    cairosvg is already a hard dependency (used elsewhere for the app), so
-    this stays a single source of truth for the logo. Failure here should
-    never take down the GUI itself, worst case the window just keeps
-    whatever default icon the OS/tkinter picks."""
+    """Set the window icon from the already-bundled lapsecoin.png.
+
+    Previously this rasterized lapsecoin.svg at runtime via cairosvg, which
+    needs libcairo -- a native library lapsecoin.spec never actually bundles
+    (no collect_all/collect_dynamic_libs for it, unlike nacl/cffi/oqs/
+    chiavdf), so it silently fails on any Windows machine without Cairo
+    already installed system-wide. lapsecoin.png is a plain build-time-
+    generated PNG (see Makefile's `icons` target) that PIL can open directly
+    with no native dependency beyond Pillow, which is already required and
+    properly bundled. Failure here should never take down the GUI itself,
+    worst case the window just keeps whatever default icon the OS/tkinter
+    picks."""
     try:
-        import cairosvg
         from PIL import Image, ImageTk
 
-        png_bytes = cairosvg.svg2png(url=_ICON_SVG, output_width=64, output_height=64)
-        img = Image.open(__import__("io").BytesIO(png_bytes))
+        img = Image.open(_ICON_PNG)
         photo = ImageTk.PhotoImage(img)
         root.iconphoto(True, photo)
         root._icon_photo = photo  # keep a reference; tkinter drops GC'd PhotoImages
     except Exception as e:
         log.debug("[gui] could not set window icon: %s", e)
+
+
+def _install_tk_exception_logging(root):
+    """Route Tkinter's own callback-exception reporting through our logger.
+
+    Once inside root.mainloop(), any exception raised in a widget command,
+    an after() callback, etc. is caught by Tkinter itself and handed to
+    report_callback_exception, whose default implementation tries to print
+    to sys.stderr. On a windowed (console=False) Windows build launched by
+    double-click, sys.stderr is None (see main.py's own comment on this),
+    so that default handler's own print() fails, and the exception it was
+    trying to report vanishes with it -- the app just closes with nothing
+    in the log. Logging here instead means a future crash of this kind
+    actually shows up in LOG_FILE."""
+    def _report(exc, val, tb):
+        import traceback
+        log.error("[gui] unhandled exception in Tk callback:\n%s",
+                  "".join(traceback.format_exception(exc, val, tb)))
+    root.report_callback_exception = _report
 
 
 class _PassphraseDialog:
@@ -82,6 +105,7 @@ class _PassphraseDialog:
         self.result = None  # (pk, kek) on success
 
         self.root = tk.Tk()
+        _install_tk_exception_logging(self.root)
         self.root.title("LapseCoin")
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self._cancel)
@@ -248,17 +272,17 @@ def _make_tray_icon(node, on_open, on_quit):
         return None
 
     try:
-        import cairosvg
         from PIL import Image
-        import io
 
-        # Render at 128px for a clean source, then downsize ourselves with
-        # high-quality resampling to a real tray-icon size. Handing the OS
-        # a raw 128px image and letting it scale down is what produced the
-        # blurry/pixelated result -- most Linux tray implementations don't
-        # use good downsampling on their own.
-        png_bytes = cairosvg.svg2png(url=_ICON_SVG, output_width=128, output_height=128)
-        raw = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+        # lapsecoin.png is bundled at 512px (see Makefile's `icons` target);
+        # downsize ourselves with high-quality resampling to a real
+        # tray-icon size rather than handing the OS a large image and
+        # letting it scale down, which is what produced a blurry/pixelated
+        # result -- most Linux tray implementations don't use good
+        # downsampling on their own. No cairosvg/libcairo needed here: see
+        # _apply_icon's docstring for why that dependency isn't reliable on
+        # a Windows build.
+        raw = Image.open(_ICON_PNG).convert("RGBA")
 
         # Some AppIndicator/Ayatana implementations don't composite true
         # transparency correctly and render it as solid black instead of the
@@ -313,6 +337,7 @@ def run_status_window(node, udp, private_port, log_file):
     one of them.
     """
     root = tk.Tk()
+    _install_tk_exception_logging(root)
     root.title("LapseCoin")
     root.minsize(440, 300)
     _apply_icon(root)
