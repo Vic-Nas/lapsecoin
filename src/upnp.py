@@ -5,6 +5,13 @@ on it, and it never raises out to the caller. If the router doesn't
 support UPnP, has it disabled, or the node is behind CGNAT (no public IP
 to map to at all), the node runs exactly as it would without this --
 just not externally reachable without a manual port forward.
+
+miniupnpc is intentionally NOT in requirements.txt: it's a C extension
+that needs a compiler to build from source, and a source install with no
+compiler present would otherwise fail entirely just for this optional
+feature. Install it yourself (`pip install miniupnpc`) on a machine that
+can build it if you want this to actually attempt a mapping; every
+runtime path here already handles it being absent.
 """
 
 import logging
