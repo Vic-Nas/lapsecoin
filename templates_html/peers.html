@@ -4,11 +4,6 @@
 {% if is_private %}
 <div class="card">
   <div class="card-title">Add a peer manually</div>
-  {% if lan_addr %}
-  <div style="color:var(--muted);font-size:.85rem;margin-bottom:.5rem">
-    This machine's local network address: <span class="hash-short" style="display:inline">{{ lan_addr }}</span>
-  </div>
-  {% endif %}
   <form id="add-peer-form" style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
     <input type="text" id="add-peer-host" placeholder="Host or IP" required style="flex:1;min-width:10rem">
     <input type="number" id="add-peer-port" placeholder="Port" min="1" max="65535" value="8333" required style="width:6rem">
