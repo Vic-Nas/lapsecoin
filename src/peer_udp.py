@@ -117,6 +117,26 @@ HDR_FMT  = "!BIHh"  # chunk_total is signed, but MT_ACK is what actually
 HDR_SIZE = struct.calcsize(HDR_FMT)
 
 
+def _local_ips() -> set[str]:
+    """Best-effort set of this machine's own IPs, so a broadcast that loops
+    back to the sending host (common: cloud instances with a private VPC IP
+    behind a public/elastic one, e.g. AWS's 172.31.x.x, get their own
+    broadcast delivered right back) never gets treated as a discovered
+    peer."""
+    ips = set()
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            ips.add(s.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        ips.update(socket.gethostbyname_ex(socket.gethostname())[2])
+    except OSError:
+        pass
+    return ips
+
+
 def _is_lan_source(host: str) -> bool:
     """True for a private, non-loopback address -- i.e. one that could only
     have reached us over the local network, never routed from the public
@@ -275,6 +295,7 @@ class UDPTransport:
         self._on_punch_go   = None  # set by discovery after init
         self._get_tip_fn    = None  # set by main after node init
         self._on_peer_hint  = None  # set by discovery; called when PING includes "from"
+        self._local_ips: set[str] = set()  # populated in start(); guards against self-admit
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -286,6 +307,7 @@ class UDPTransport:
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self._sock.bind(("0.0.0.0", self.port))
         self._sock.settimeout(RECV_TIMEOUT)
+        self._local_ips = _local_ips()
         self._running = True
         t = threading.Thread(target=self._recv_loop, daemon=True, name="udp-recv")
         t.start()
@@ -566,8 +588,9 @@ class UDPTransport:
                 # local network (never routed off the public internet), so
                 # it's admissible on sight -- this is what makes broadcast
                 # discovery (and any direct LAN ping) actually peer up,
-                # without waiting on the DHT/punch pipeline at all.
-                if _is_lan_source(sender[0]):
+                # without waiting on the DHT/punch pipeline at all. Excludes
+                # our own IPs so a looped-back broadcast doesn't self-admit.
+                if _is_lan_source(sender[0]) and sender[0] not in self._local_ips:
                     self._pool.add(sender_addr, allow_private=True)
 
         elif msg_type == MT_PONG:
@@ -578,7 +601,7 @@ class UDPTransport:
                 if matched:
                     self._pong_addrs[msg_id] = observed
                     self._pong_events[msg_id].set()
-            if _is_lan_source(sender[0]):
+            if _is_lan_source(sender[0]) and sender[0] not in self._local_ips:
                 self._pool.add(sender_addr, allow_private=True)
 
         elif msg_type == MT_PEERS:

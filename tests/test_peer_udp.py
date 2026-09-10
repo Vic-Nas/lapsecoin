@@ -151,6 +151,19 @@ def test_ping_from_loopback_does_not_self_admit():
     pool.add.assert_not_called()
 
 
+def test_ping_from_own_private_ip_does_not_self_admit():
+    """A cloud instance's own broadcast can loop back to itself over its
+    private VPC IP (e.g. AWS's 172.31.x.x behind a public/elastic IP) --
+    that must not self-admit just because the source happens to be private."""
+    pool = MagicMock()
+    udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
+                       on_tx=MagicMock(), on_peers=MagicMock(), pool=pool)
+    udp._send_one = MagicMock()
+    udp._local_ips = {"172.31.17.210"}
+    udp._dispatch(MT_PING, 5, {"genesis": udp.genesis_hash}, ("172.31.17.210", 9999))
+    pool.add.assert_not_called()
+
+
 def test_broadcast_discover_sends_ping_to_broadcast_address():
     udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
                        on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
