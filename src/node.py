@@ -59,22 +59,37 @@ SYNC_POLL_INTERVAL_SECONDS = 10
 # this only matters for the failure case it's meant to bound.
 SYNC_POLL_INFO_TIMEOUT_SECONDS = 2.0
 
+# Recent-state cache: lets a shallow reorg resume from an already-computed
+# state instead of replaying the whole chain from genesis (see
+# _resume_point). Routine reorgs here are shallow -- a lost race resolves
+# within a block or two, ties are the common case, not sustained multi-
+# height divergence (see the whitepaper's section on the VDF lottery).
+# Anything deeper than this window falls back to a full replay, which is
+# also the right conservative behavior for what would be a genuinely
+# abnormal, out-of-scope event (a sustained partition or majority
+# attacker) -- not something worth building fast-path machinery for.
+RECENT_STATE_CACHE_SIZE = 20
+
 
 # ---------------------------------------------------------------------------
 # Tail validation (pure, no node state touched)
 # ---------------------------------------------------------------------------
 
 def _validate_tail(tail, prefix):
-    """Validate new blocks against a trusted prefix. Pure: nothing is mutated.
+    """Validate new blocks against a trusted prefix, building the resulting
+    ChainState along the way. Pure: nothing is mutated.
 
-    Returns (True, None) or (False, error_string).
+    Returns (True, None, cs) or (False, error_string, None). The caller
+    reuses the returned cs directly rather than deriving it a second time
+    (e.g. via a separate ChainState.from_chain(prefix + tail) call), which
+    would silently redo this same replay.
     """
     cs = ChainState.from_chain(prefix) if prefix else ChainState.from_genesis()
     for blk in tail:
         ok, err, cs = cs.validate_and_apply(blk)
         if not ok:
-            return False, f"invalid block at {blk['height']}: {err}"
-    return True, None
+            return False, f"invalid block at {blk['height']}: {err}", None
+    return True, None, cs
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +139,17 @@ class Node:
         # mempool unconfirmed. _retry_stuck_local_txs() re-floods our own
         # submissions that are still pending after RELAY_RETRY_SECONDS.
         self._local_pending = {}
+
+        # height -> (State snapshot, cumulative_iterations) for the last
+        # RECENT_STATE_CACHE_SIZE heights this node has actually committed.
+        # Refreshed on every commit (_commit and apply_better_chain), stale
+        # entries above a reorg's fork point purged there too. Not
+        # persisted across restarts -- it exists to avoid replaying a
+        # shallow reorg from genesis, and self-refills within a few
+        # cycles of normal running regardless; an empty cache right after
+        # startup just means the fallback (full replay) applies until it
+        # does. See RECENT_STATE_CACHE_SIZE above for why this stays small.
+        self._recent_states = collections.OrderedDict()
 
         # Real wall-clock seconds this node itself spent on its last 30 VDF
         # evaluations -- recorded the moment each one finishes, regardless of
@@ -473,6 +499,7 @@ class Node:
         """Append a validated block: update ChainState, persist, publish view."""
         confirmed = {tx_mod.tx_hash(t) for t in blk.get("transactions", [])}
         self.cs = self.cs.apply_block(blk)
+        self._remember_state(self.cs)
         self.storage.save_block_and_state(blk, self.cs.state)
         self.mempool.remove_many(confirmed)
         self.view = NodeView(self.cs)
@@ -558,8 +585,53 @@ class Node:
     # Chain sync / reorg
     # ------------------------------------------------------------------
 
+    def _remember_state(self, cs):
+        """Cache (state, cumulative_iterations) at cs.height, so a later
+        shallow reorg back to this point can resume without a full replay.
+        Bounded to RECENT_STATE_CACHE_SIZE; see that constant for why."""
+        self._recent_states[cs.height] = (cs.state.snapshot(), cs.cumulative_iterations)
+        self._recent_states.move_to_end(cs.height)
+        while len(self._recent_states) > RECENT_STATE_CACHE_SIZE:
+            self._recent_states.popitem(last=False)
+
+    def _forget_states_from(self, height):
+        """Purge cached entries at or above `height`: a reorg just replaced
+        whatever blocks used to be there, so a *later* reorg landing on one
+        of those heights must not reuse state that belonged to the now-
+        abandoned branch."""
+        for h in [h for h in self._recent_states if h >= height]:
+            del self._recent_states[h]
+
+    def _resume_point(self, fork_point, remote_chain):
+        """A ChainState to resume validation from at fork_point, avoiding a
+        full genesis replay, when one is cheaply available:
+          - a pure extension (fork_point == len(self.cs.chain)): self.cs
+            itself, already fully built and sitting in memory.
+          - a shallow reorg: a cached recent state (see _remember_state).
+        Returns None if neither applies (a reorg deeper than the cache, or
+        shortly after a restart before the cache has refilled) -- callers
+        fall back to a full replay in that case, which is also the right
+        conservative behavior for what would be a genuinely abnormal, deep
+        divergence (see RECENT_STATE_CACHE_SIZE).
+        """
+        if fork_point == len(self.cs.chain):
+            return self.cs
+        resume_height = fork_point - 1
+        if resume_height == 0:
+            # State right after genesis is always trivially known (empty
+            # balances, zero iterations -- genesis carries no transactions
+            # and contributes nothing to cumulative_iterations), no need
+            # to consult the cache for this one.
+            return ChainState(remote_chain[:fork_point], state_mod.State(), 0)
+        cached = self._recent_states.get(resume_height)
+        if cached is None:
+            return None
+        base_state, base_iterations = cached
+        return ChainState(remote_chain[:fork_point], base_state.snapshot(), base_iterations)
+
     def _evaluate_remote_chain(self, remote_chain):
-        """Pure evaluation of a candidate remote chain. No state is mutated.
+        """Pure evaluation of a candidate remote chain. No committed state
+        is mutated (the _recent_states cache is only ever read here).
 
         Returns (ok, err, fork_point, tail, remote_cs) on success,
         or (False, err, None, None, None) on rejection.
@@ -567,7 +639,8 @@ class Node:
         Order of operations matters for security:
           1. Genesis check  cheap, stops wrong-network chains immediately.
           2. Fork point     O(min(local, remote)) hash comparisons.
-          3. Build remote_cs, either the fast-extend path or the full replay.
+          3. Build remote_cs: resume from a cached/in-memory state when
+             possible, otherwise a full replay from genesis.
           4. is_better_than fork choice, only after we know it's valid.
         """
         if not remote_chain or remote_chain[0]["hash"] != self.cs.genesis_hash:
@@ -583,17 +656,16 @@ class Node:
         )
         tail = remote_chain[fork_point:]
 
-        if fork_point == len(self.cs.chain):
-            # Pure extension (by far the common case): remote_chain's prefix
-            # is exactly self.cs.chain, already fully built and sitting in
-            # memory. Validate and apply just the new tail directly onto it,
-            # one block at a time, instead of re-deriving the whole chain's
-            # state from scratch -- ChainState.from_chain (the branch below)
-            # replays every block since genesis on every call, so without
-            # this a node syncing far behind in many small pages would redo
-            # that full replay once per page, O(chain length) work per page
-            # instead of O(page size).
-            cs = self.cs
+        base_cs = self._resume_point(fork_point, remote_chain)
+        if base_cs is not None:
+            # Extension or shallow reorg: validate and apply just the new
+            # tail onto an already-known state, instead of re-deriving the
+            # whole chain from scratch -- ChainState.from_chain (the branch
+            # below) replays every block since genesis on every call, so
+            # without this a node syncing far behind in many small pages
+            # (or hitting a routine reorg) would redo that full replay each
+            # time, O(chain length) work per attempt instead of O(new work).
+            cs = base_cs
             for blk in tail:
                 ok, err, cs = cs.validate_and_apply(blk)
                 if not ok:
@@ -602,19 +674,21 @@ class Node:
                     return False, f"invalid block at {blk['height']}: {err}", None, None, None
             remote_cs = cs
         else:
-            # Reorg: remote_chain diverges before our current tip. Rare and
-            # typically shallow, so a full replay of the (shorter, common)
-            # prefix plus the new tail is an acceptable cost here, unlike
-            # the common extension case above.
-            ok, err = _validate_tail(tail, remote_chain[:fork_point])
-            if not ok:
-                log.warning("[sync] rejected: %s", err)
-                return False, err, None, None, None
+            # Deeper than the cache, or the cache hasn't filled yet (e.g.
+            # shortly after a restart): fall back to a full replay. Also
+            # the right conservative behavior for what would be a
+            # genuinely abnormal, deep divergence. _validate_tail already
+            # builds the resulting ChainState as it validates -- reuse it
+            # directly rather than replaying the same chain a second time
+            # via a separate ChainState.from_chain(remote_chain) call.
             try:
-                remote_cs = ChainState.from_chain(remote_chain)
+                ok, err, remote_cs = _validate_tail(tail, remote_chain[:fork_point])
             except Exception as e:
                 log.warning("[sync] chain replay failed: %s", e)
                 return False, f"chain replay error: {e}", None, None, None
+            if not ok:
+                log.warning("[sync] rejected: %s", err)
+                return False, err, None, None, None
 
         if not remote_cs.is_better_than(self.cs):
             log.debug("[sync] remote chain not better  remote_h=%d  local_h=%d",
@@ -666,7 +740,12 @@ class Node:
         # failure past this point (e.g. a malformed re-added tx) must not
         # leave storage on the new chain while self.cs -- what mining and
         # validation actually run against -- still points at the old one.
+        # Stale cache entries at or above fork_point belonged to the branch
+        # just abandoned; a later reorg landing on one of those heights
+        # must not reuse state from blocks that are no longer canonical.
+        self._forget_states_from(fork_point)
         self.cs = remote_cs
+        self._remember_state(self.cs)
         self.view = NodeView(self.cs)
         try:
             self._reorg_mempool(fork_point, old_chain, remote_chain, remote_cs.state)

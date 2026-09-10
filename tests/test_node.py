@@ -90,29 +90,33 @@ def fresh_state():
 
 class TestValidateTail:
     def test_empty_tail_passes(self):
-        ok, err = _validate_tail([], [genesis()])
+        ok, err, cs = _validate_tail([], [genesis()])
         assert ok is True, err
+        assert cs.height == 0
 
     def test_single_valid_block_passes(self):
         g = genesis()
         b1 = make_block(1, g["hash"], [])
-        ok, err = _validate_tail([b1], [g])
+        ok, err, cs = _validate_tail([b1], [g])
         assert ok is True, err
+        assert cs.height == 1
 
     def test_invalid_block_in_tail_fails(self):
         g = genesis()
         b1 = make_block(1, g["hash"], [])
         b1["previous_hash"] = "00" * 32
         b1["hash"] = block_mod.block_hash(b1)
-        ok, err = _validate_tail([b1], [g])
+        ok, err, cs = _validate_tail([b1], [g])
         assert ok is False
+        assert cs is None
 
     def test_two_valid_blocks_passes(self):
         g = genesis()
         b1 = make_block(1, g["hash"], [])
         b2 = make_block(2, b1["hash"], [])
-        ok, err = _validate_tail([b1, b2], [g])
+        ok, err, cs = _validate_tail([b1, b2], [g])
         assert ok is True, err
+        assert cs.height == 2
 
 
 # ---------------------------------------------------------------------------
@@ -579,6 +583,89 @@ class TestEvaluateRemoteChain:
         assert len(tail) == 2
 
 
+class TestRecentStateCache:
+    """_resume_point / _remember_state / _forget_states_from: a shallow
+    reorg should resume from a cached state instead of a full replay, and
+    that cache must never let a later reorg reuse state from a branch
+    that's already been abandoned."""
+
+    def test_shallow_reorg_resumes_from_cache_not_full_replay(self, node_env):
+        node, *_ = node_env
+        g = node.cs.chain[0]
+        b1 = make_block(1, g["hash"], [])
+        b2 = make_block(2, b1["hash"], [])
+        b3 = make_block(3, b2["hash"], [])
+        for b in (b1, b2, b3):
+            node._commit(b)
+        assert node.cs.height == 3
+        assert set(node._recent_states) == {1, 2, 3}
+
+        # A sibling fork at height 3 (same parent b2, different builder) --
+        # fork_point=3, resume_height=2, which is cached.
+        b3_alt = make_block(3, b2["hash"], [], builder_index=1, vdf_output="00" * 100)
+
+        import unittest.mock as _mock
+        with _mock.patch.object(ChainState, "from_chain") as mocked_replay:
+            ok, err, fork_point, tail, remote_cs = node._evaluate_remote_chain(
+                [g, b1, b2, b3_alt])
+        assert ok is True, err
+        assert fork_point == 3
+        mocked_replay.assert_not_called()
+        assert remote_cs.height == 3
+
+    def test_reorg_beyond_cache_falls_back_to_full_replay(self, node_env, monkeypatch):
+        node, *_ = node_env
+        monkeypatch.setattr(node_mod, "RECENT_STATE_CACHE_SIZE", 1)
+        g = node.cs.chain[0]
+        b1 = make_block(1, g["hash"], [])
+        b2 = make_block(2, b1["hash"], [])
+        b3 = make_block(3, b2["hash"], [])
+        for b in (b1, b2, b3):
+            node._commit(b)
+        # Cache holds only the most recent 1 entry now -- height 1 and 2
+        # (needed below, as resume_height=1) were evicted, and it's not
+        # the free trivial genesis case either (resume_height != 0).
+        assert set(node._recent_states) == {3}
+
+        b2_alt = make_block(2, b1["hash"], [], builder_index=1, vdf_output="00" * 100)
+        b3_alt = make_block(3, b2_alt["hash"], [], builder_index=1, vdf_output="00" * 100)
+
+        import unittest.mock as _mock
+        with _mock.patch.object(ChainState, "from_chain", wraps=ChainState.from_chain) as spy:
+            ok, err, *_ = node._evaluate_remote_chain([g, b1, b2_alt, b3_alt])
+        assert ok is True, err
+        spy.assert_called_once()
+
+    def test_stale_cache_entry_not_reused_after_reorg(self, node_env):
+        """Reorg away from b2 (builder 0) to b2_b (builder 1), then reorg
+        again to a third sibling b2_c at the same height. The second reorg
+        must not reuse b2_b's now-abandoned state under b2's old cache
+        slot -- it should resume from the shared, untouched ancestor
+        (height 1) instead, same as the first reorg did."""
+        node, *_ = node_env
+        g = node.cs.chain[0]
+        b1 = make_block(1, g["hash"], [])
+        b2_a = make_block(2, b1["hash"], [], builder_index=0)
+        node._commit(b1)
+        node._commit(b2_a)
+        assert node.cs.tip["builder"] == address(0)
+
+        b2_b = make_block(2, b1["hash"], [], builder_index=1, vdf_output="50" * 100)
+        ok, err = node.apply_better_chain([g, b1, b2_b])
+        assert ok is True, err
+        assert node.cs.tip["builder"] == address(1)
+        # The abandoned b2_a's height was purged, not left stale.
+        assert node._recent_states[2][0] is not None
+        assert node.cs.state.get_balance(address(1)) > 0
+
+        b2_c = make_block(2, b1["hash"], [], builder_index=2, vdf_output="00" * 100)
+        ok, err = node.apply_better_chain([g, b1, b2_c])
+        assert ok is True, err
+        assert node.cs.tip["builder"] == address(2)
+        # Builder 1's reward from the now-abandoned b2_b must not linger.
+        assert node.cs.state.get_balance(address(1)) == 0
+        assert node.cs.state.get_balance(address(2)) > 0
+
 # ---------------------------------------------------------------------------
 # 12. apply_better_chain
 # ---------------------------------------------------------------------------
@@ -625,46 +712,32 @@ class TestReorgMempool:
     def test_reorg_restores_old_chain_txs(self, node_env):
         """Txs from the old chain that aren't in the new chain go back to mempool."""
         node, *_ = node_env
-        node.cs.state.credit(address(0), 100 * TICKS_PER_LAPSE)
-        node.cs.state.total_minted += 100 * TICKS_PER_LAPSE
-
-        t = make_tx(0, 1, TICKS_PER_LAPSE, node.cs.state)
         g = node.cs.chain[0]
-        b1_old = make_block(1, g["hash"], [t])
-        # Commit the block so t is now confirmed in the old chain
-        node._commit(b1_old)
+        # b0 is shared by both branches, so address(0)'s balance comes from
+        # a real block reward replayed in the common prefix -- no need to
+        # hack a balance into a mocked from_chain, which also means the
+        # reorg here lands within _resume_point's cache (fork_point=2,
+        # resume_height=1, populated by the _commit(b0) below), exercising
+        # the actual fast path rather than a full replay.
+        b0 = make_block(1, g["hash"], [], builder_index=0)
+        node._commit(b0)
         assert node.cs.height == 1
 
-        # Produce a new chain that does NOT contain t.
-        # Use apply_better_chain directly with a chain that _evaluate_remote_chain
-        # will accept — we patch is_better_than to always return True so the test
-        # focuses on mempool restoration logic, not fork choice. from_chain is
-        # wrapped so the *fully replayed* remote chain's state also has
-        # address(0)'s balance (not just node.cs.state's manual credit above)
-        # -- otherwise t correctly fails re-validation on balance under the
-        # new chain, which is the fix under test working as intended, not a
-        # bug. _validate_tail's own from_chain(prefix) call is left alone.
-        b1_new = make_block(1, g["hash"], [], builder_index=1)
-        b2_new = make_block(2, b1_new["hash"], [], builder_index=1)
-        full_chain = [g, b1_new, b2_new]
-        orig_from_chain = ChainState.from_chain.__func__
+        t = make_tx(0, 1, TICKS_PER_LAPSE, node.cs.state)
+        b1_old = make_block(2, b0["hash"], [t])
+        node._commit(b1_old)
+        assert node.cs.height == 2
 
-        def patched_from_chain(cls, chain):
-            cs = orig_from_chain(cls, chain)
-            if chain == full_chain:
-                cs.state.credit(address(0), 100 * TICKS_PER_LAPSE)
-                cs.state.total_minted += 100 * TICKS_PER_LAPSE
-            return cs
+        # New chain shares b0 but replaces b1 with one that doesn't include t.
+        b1_new = make_block(2, b0["hash"], [], builder_index=1)
+        b2_new = make_block(3, b1_new["hash"], [], builder_index=1)
+        full_chain = [g, b0, b1_new, b2_new]
 
         import unittest.mock as _mock
-        with _mock.patch.object(
-            node.cs.__class__, "is_better_than", return_value=True
-        ), _mock.patch.object(
-            ChainState, "from_chain", classmethod(patched_from_chain)
-        ):
+        with _mock.patch.object(node.cs.__class__, "is_better_than", return_value=True):
             ok, err = node.apply_better_chain(full_chain)
         assert ok is True, err
-        # t was in the old chain at fork_point=1, is not in the new chain,
+        # t was in the old chain at fork_point=2, is not in the new chain,
         # and is still valid (nonce/balance) against the new chain's state.
         assert node.mempool.get(tx_mod.tx_hash(t)) is not None
 
