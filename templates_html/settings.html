@@ -2,67 +2,86 @@
 {% block content %}
 <h2>Settings</h2>
 
-<div class="card">
-  <div class="card-title">Settle window</div>
-  <div class="stat-label" style="margin-bottom:0">
-    While this node is still computing its own VDF for the next block, it
-    starts a short timer the moment it sees a valid competing candidate for
-    that same height (or the moment its own VDF finishes, whichever comes
-    first). When the timer runs out, it stops waiting and picks a winner
-    from whatever candidates it has, aborting its own attempt if it hasn't
-    finished yet rather than running it to completion against a height
-    that's likely already settled elsewhere. This is a local, per-node
-    choice, not a network rule -- other nodes are unaffected by your value.
-  </div>
-</div>
-
 {% if alert_ok %}<div class="alert alert-ok">{{ alert_ok }}</div>{% endif %}
 {% if alert_err %}<div class="alert alert-err">{{ alert_err }}</div>{% endif %}
 
-<div class="card">
-  <div class="card-title">Real observed candidate gaps</div>
-  {% if candidate_gap_stats %}
-  <div class="stats">
-    <div class="stat">
-      <div class="stat-label">Samples</div>
-      <div class="stat-value" style="font-size:1rem">{{ candidate_gap_stats.count }}</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">Median gap</div>
-      <div class="stat-value" style="font-size:1rem">{{ "%.1f"|format(candidate_gap_stats.median) }}s</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">p95 gap</div>
-      <div class="stat-value" style="font-size:1rem">{{ "%.1f"|format(candidate_gap_stats.p95) }}s</div>
-    </div>
-    <div class="stat">
-      <div class="stat-label">Max gap</div>
-      <div class="stat-value" style="font-size:1rem">{{ "%.1f"|format(candidate_gap_stats.max) }}s</div>
-    </div>
-  </div>
-  <div class="stat-sub" style="margin-top:.75rem">
-    Time between the first and each later valid candidate this node has
-    actually seen for the same height. Use this, not a guess, to judge
-    whether your settle window below is in the right range.
-  </div>
-  {% else %}
-  <div class="stat-label">
-    Not enough real multi-candidate races observed yet on this node to show
-    a distribution. Comes from actual network activity, not a formula.
-  </div>
-  {% endif %}
-</div>
+<form method="POST">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
-<div class="card">
-  <div class="card-title">Adjust</div>
-  <form method="POST">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <div class="form-group">
+<div class="settings-grid">
+
+  <div class="card">
+    <div class="card-title">Uptime rewards</div>
+    {% if not rewarder_available %}
+    <div class="stat-label">Unavailable on this node.</div>
+    {% else %}
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-label">Status</div>
+        <div class="stat-value" style="font-size:1rem;color:{{ 'var(--green)' if remaining_lapse > 0 else 'var(--muted)' }}">
+          {{ "Active" if remaining_lapse > 0 else "Inactive" }}
+        </div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Budget left</div>
+        <div class="stat-value" style="font-size:1rem">{{ "%.4f"|format(remaining_lapse) }} LAPSE</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Payout</div>
+        <div class="stat-value" style="font-size:.85rem">
+          {{ "pending" if pending else "none in flight" }}
+        </div>
+      </div>
+    </div>
+    <div class="form-group" style="margin-top:.6rem">
+      <label for="budget_lapse">Budget (LAPSE remaining) &middot; balance {{ "%.4f"|format(balance_lapse) }}</label>
+      <input type="number" id="budget_lapse" name="budget_lapse" min="0" step="any"
+             value="{{ '%.4f'|format(remaining_lapse) }}">
+      {% if suggested_lapse > 0 %}
+      <div class="stat-sub">
+        Try 5% of balance:
+        <a href="#" onclick="document.getElementById('budget_lapse').value='{{ '%.4f'|format(suggested_lapse) }}'; return false;">{{ "%.4f"|format(suggested_lapse) }}</a>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-title">Settle window</div>
+    <div class="stat-label" style="margin-bottom:.5rem">
+      While still computing its own block, this node waits this long after
+      first seeing a valid competitor (or after its own VDF finishes,
+      whichever comes first) before finalizing and giving up on a losing
+      attempt. Local to this node only.
+    </div>
+    {% if candidate_gap_stats %}
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-label">Samples</div>
+        <div class="stat-value" style="font-size:1rem">{{ candidate_gap_stats.count }}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Median gap</div>
+        <div class="stat-value" style="font-size:1rem">{{ "%.1f"|format(candidate_gap_stats.median) }}s</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">p95 gap</div>
+        <div class="stat-value" style="font-size:1rem">{{ "%.1f"|format(candidate_gap_stats.p95) }}s</div>
+      </div>
+    </div>
+    {% else %}
+    <div class="stat-label">Not enough real multi-candidate races observed yet to show a distribution.</div>
+    {% endif %}
+    <div class="form-group" style="margin-top:.6rem">
       <label for="settle_window_seconds">Settle window (seconds)</label>
       <input type="number" id="settle_window_seconds" name="settle_window_seconds"
              min="0" step="any" value="{{ settle_window_seconds }}">
     </div>
-    <button type="submit">Save</button>
-  </form>
+  </div>
+
 </div>
+
+<button type="submit" style="margin-top:.75rem">Save</button>
+</form>
 {% endblock %}

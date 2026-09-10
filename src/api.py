@@ -829,11 +829,11 @@ def create_app(node, pool, private_port=8335, public_port=8333,
             message=f"Send is only available on the local interface "
                     f"(localhost:{private_port})."), 403
 
-    # Rewards settings disabled on public port; show locked page
-    @app.route("/rewards")
-    def rewards_locked():
-        return render_template("error.html", title="Rewards",
-            message=f"Uptime-reward settings are only available on the "
+    # Settings disabled on public port; show locked page
+    @app.route("/settings")
+    def settings_locked():
+        return render_template("error.html", title="Settings",
+            message=f"Settings are only available on the "
                     f"local interface (localhost:{private_port})."), 403
 
     return app
@@ -869,63 +869,58 @@ def create_private_app(node, pool, private_port=8335, public_port=8333,
                              private_port, public_port, is_private=True,
                              update_checker=update_checker, rewarder=rewarder)
 
-    @app.route("/rewards", methods=["GET", "POST"])
-    def rewards():
+    @app.route("/settings", methods=["GET", "POST"])
+    def settings():
+        info = node.get_info()
         balance_lapse = node.view.state.get_balance(node.addr) / TICKS_PER_LAPSE
-        ctx = dict(title="Rewards", csrf_token=csrf_token,
+        ctx = dict(title="Settings", csrf_token=csrf_token,
                    alert_ok="", alert_err="", rewarder_available=rewarder is not None,
                    balance_lapse=balance_lapse,
                    # A light, non-binding starting point, not a push toward any
                    # particular amount: 5% of the current balance.
-                   suggested_lapse=balance_lapse * 0.05)
-        if rewarder is None:
-            return render_template("rewards.html", **ctx)
-
-        if request.method == "POST":
-            if not secrets.compare_digest(request.form.get("csrf_token", ""), csrf_token):
-                ctx["alert_err"] = "Session expired; reload the page and try again."
-            else:
-                budget_raw = request.form.get("budget_lapse", "").strip()
-                try:
-                    new_budget = float(budget_raw)
-                    if new_budget < 0:
-                        raise ValueError
-                    current = rewarder.status()["remaining_ticks"] / TICKS_PER_LAPSE
-                    rewarder.adjust_budget(new_budget - current)
-                    ctx["alert_ok"] = "Settings saved."
-                except ValueError:
-                    ctx["alert_err"] = "Budget must be a non-negative number."
-
-        status = rewarder.status()
-        ctx["remaining_lapse"] = status["remaining_ticks"] / TICKS_PER_LAPSE
-        ctx["pending"] = status["pending"]
-        return render_template("rewards.html", **ctx)
-
-    @app.route("/settings", methods=["GET", "POST"])
-    def settings():
-        info = node.get_info()
-        ctx = dict(title="Settings", csrf_token=csrf_token,
-                   alert_ok="", alert_err="",
+                   suggested_lapse=balance_lapse * 0.05,
                    settle_window_seconds=info["settle_window_seconds"],
                    candidate_gap_stats=info["candidate_gap_stats"])
+        if rewarder is not None:
+            status = rewarder.status()
+            ctx["remaining_lapse"] = status["remaining_ticks"] / TICKS_PER_LAPSE
+            ctx["pending"] = status["pending"]
 
         if request.method == "POST":
             if not secrets.compare_digest(request.form.get("csrf_token", ""), csrf_token):
                 ctx["alert_err"] = "Session expired; reload the page and try again."
             else:
-                raw = request.form.get("settle_window_seconds", "").strip()
+                errors = []
+
+                if rewarder is not None:
+                    budget_raw = request.form.get("budget_lapse", "").strip()
+                    try:
+                        new_budget = float(budget_raw)
+                        if new_budget < 0:
+                            raise ValueError
+                        current = rewarder.status()["remaining_ticks"] / TICKS_PER_LAPSE
+                        rewarder.adjust_budget(new_budget - current)
+                        ctx["remaining_lapse"] = new_budget
+                    except ValueError:
+                        errors.append("Budget must be a non-negative number.")
+
+                settle_raw = request.form.get("settle_window_seconds", "").strip()
                 try:
-                    seconds = float(raw)
+                    seconds = float(settle_raw)
                     if seconds < 0:
                         raise ValueError
                     ok, err = node.set_settle_window_seconds_from_api(seconds)
                     if ok:
-                        ctx["alert_ok"] = "Settings saved."
                         ctx["settle_window_seconds"] = seconds
                     else:
-                        ctx["alert_err"] = err or "Failed to save."
+                        errors.append(err or "Failed to save settle window.")
                 except ValueError:
-                    ctx["alert_err"] = "Settle window must be a non-negative number of seconds."
+                    errors.append("Settle window must be a non-negative number of seconds.")
+
+                if errors:
+                    ctx["alert_err"] = " ".join(errors)
+                else:
+                    ctx["alert_ok"] = "Settings saved."
 
         return render_template("settings.html", **ctx)
 
