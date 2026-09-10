@@ -88,7 +88,7 @@ def _validate_tail(tail, prefix):
     for blk in tail:
         ok, err, cs = cs.validate_and_apply(blk)
         if not ok:
-            return False, f"invalid block at {blk['height']}: {err}", None
+            return False, f"invalid block at {blk.get('height')}: {err}", None
     return True, None, cs
 
 
@@ -665,14 +665,21 @@ class Node:
             # without this a node syncing far behind in many small pages
             # (or hitting a routine reorg) would redo that full replay each
             # time, O(chain length) work per attempt instead of O(new work).
-            cs = base_cs
-            for blk in tail:
-                ok, err, cs = cs.validate_and_apply(blk)
-                if not ok:
-                    log.warning("[sync] rejected: invalid block at %s: %s",
-                               blk.get("height"), err)
-                    return False, f"invalid block at {blk['height']}: {err}", None, None, None
-            remote_cs = cs
+            # Wrapped like the fallback branch below: tail is untrusted peer
+            # data, and validation can raise on a malformed block (e.g. one
+            # missing a required field) rather than cleanly returning False.
+            try:
+                cs = base_cs
+                for blk in tail:
+                    ok, err, cs = cs.validate_and_apply(blk)
+                    if not ok:
+                        log.warning("[sync] rejected: invalid block at %s: %s",
+                                   blk.get("height"), err)
+                        return False, f"invalid block at {blk.get('height')}: {err}", None, None, None
+                remote_cs = cs
+            except Exception as e:
+                log.warning("[sync] validation failed: %s", e)
+                return False, f"validation error: {e}", None, None, None
         else:
             # Deeper than the cache, or the cache hasn't filled yet (e.g.
             # shortly after a restart): fall back to a full replay. Also

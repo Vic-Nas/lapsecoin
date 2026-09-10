@@ -1,9 +1,9 @@
 """
 Unit tests for syncer.py (UDP transport edition)
 
-Covers: check_and_sync (no peers, peer not ahead, fetch error, success),
-_find_fork_point (binary search, shared tip, genesis diverge, error),
-_fetch_chain (single page, pagination, empty, error).
+Covers: check_and_sync (no peers, peer not ahead, fetch error, success,
+multi-page pagination, a later page being rejected),
+_find_fork_point (binary search, shared tip, genesis diverge, error).
 
 UDP calls are mocked via udp.request_sync -- no network.
 """
@@ -188,41 +188,5 @@ class TestFindForkPoint:
         udp.request_sync.side_effect = fake_sync
         fp = syncer._find_fork_point("1.2.3.4:9000", local)
         assert fp == 1
-
-
-# ---------------------------------------------------------------------------
-# 3. _fetch_chain
-# ---------------------------------------------------------------------------
-
-class TestFetchChain:
-    def test_single_page_returns_blocks(self):
-        syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
-        blocks = chain_of(3)
-        udp.request_sync.return_value = wrap_chain(blocks)
-        result = syncer._fetch_chain("1.2.3.4:9000", from_h=0, remote_height=2)
-        assert result is not None
-        assert len(result) == 3
-
-    def test_none_response_returns_none(self):
-        syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
-        udp.request_sync.return_value = None
-        assert syncer._fetch_chain("1.2.3.4:9000", from_h=0, remote_height=5) is None
-
-    def test_empty_chain_returns_none(self):
-        syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
-        udp.request_sync.return_value = wrap_chain([])
-        assert syncer._fetch_chain("1.2.3.4:9000", from_h=0, remote_height=5) is None
-
-    def test_pagination_concatenates_pages(self):
-        syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
-        page1 = chain_of(FETCH_CHUNK)
-        page2 = chain_of(3)
-
-        responses = iter([wrap_chain(page1), wrap_chain(page2)])
-        udp.request_sync.side_effect = lambda *a, **kw: next(responses)
-        result = syncer._fetch_chain("1.2.3.4:9000", from_h=0,
-                                     remote_height=FETCH_CHUNK + 2)
-        assert result is not None
-        assert len(result) == FETCH_CHUNK + 3
 
 

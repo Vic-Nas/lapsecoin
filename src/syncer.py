@@ -175,23 +175,3 @@ class Syncer:
                 hi = mid - 1
 
         return (result + 1) if result is not None else 0
-
-    def _fetch_chain(self, peer, from_h, remote_height):
-        """Fetch chain in FETCH_CHUNK-block pages."""
-        chain = []
-        h = from_h
-        while h <= remote_height:
-            to_h = min(h + FETCH_CHUNK - 1, remote_height)
-            resp = self._request_sync_with_retry(peer, from_h=h, to_h=to_h, timeout=30)
-            if resp is None:
-                log.warning("[sync] fetch page empty  peer=%s  from_h=%d", peer, h)
-                break
-            page = resp.get("chain") if isinstance(resp, dict) else None
-            if not isinstance(page, list) or not page:
-                log.warning("[sync] fetch page empty  peer=%s  from_h=%d", peer, h)
-                break
-            chain.extend(page)
-            if len(page) < FETCH_CHUNK:
-                break
-            h += FETCH_CHUNK
-        return chain or None

@@ -582,6 +582,22 @@ class TestEvaluateRemoteChain:
         assert fork_point == 1  # local is at height 0, diverge at index 1
         assert len(tail) == 2
 
+    def test_malformed_block_in_extension_rejected_not_raised(self, node_env):
+        """A block missing a required field can still have a self-consistent
+        hash (block_hash just hashes whatever's present), so validation can
+        reach a raw dict access like blk["height"] and raise, instead of
+        cleanly returning False. The pure-extension fast path must catch
+        that the same way the reorg fallback path already does, rather
+        than letting it escape as an unhandled exception."""
+        node, *_ = node_env
+        g = node.cs.chain[0]
+        b1 = make_block(1, g["hash"], [])
+        del b1["height"]
+        b1["hash"] = block_mod.block_hash(b1)  # stays self-consistent
+        ok, err, *_ = node._evaluate_remote_chain([g, b1])
+        assert ok is False
+        assert err  # some rejection reason, not an unhandled exception
+
 
 class TestRecentStateCache:
     """_resume_point / _remember_state / _forget_states_from: a shallow
