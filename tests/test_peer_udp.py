@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import peer_udp
 from peer_udp import (LAN_DISCOVERY_PORT, MT_GETINFO, MT_INFO, MT_PING, MT_PONG,
                        MT_TX, UDPTransport, _decode, _encode, probe_lan_ports)
 
@@ -166,7 +167,7 @@ def test_ping_from_own_private_ip_does_not_self_admit():
     pool.add.assert_not_called()
 
 
-def test_broadcast_discover_announces_own_port_on_discovery_socket():
+def test_broadcast_discover_announces_own_port_on_discovery_socket(monkeypatch):
     """The LAN discovery broadcast must carry this node's actual data port
     (self.port) rather than requiring every node to share one port -- two
     machines behind the same router commonly use different ports on
@@ -174,16 +175,16 @@ def test_broadcast_discover_announces_own_port_on_discovery_socket():
     machine), and this is the whole point of a dedicated discovery port."""
     udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
                        on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
+    udp._disc_sock = MagicMock()  # just needs to be truthy
     sent = []
-    fake_disc_sock = MagicMock()
-    fake_disc_sock.sendto = lambda payload, target: sent.append((payload, target))
-    udp._disc_sock = fake_disc_sock
+    monkeypatch.setattr(peer_udp, "_broadcast_from_all_interfaces",
+                        lambda payload, port: sent.append((payload, port)))
 
     udp.broadcast_discover()
 
     assert len(sent) == 1
-    payload, target = sent[0]
-    assert target == ("255.255.255.255", LAN_DISCOVERY_PORT)
+    payload, port = sent[0]
+    assert port == LAN_DISCOVERY_PORT
     decoded = _decode(payload)
     assert decoded == {"type": "announce", "genesis": udp.genesis_hash, "port": 9999}
 

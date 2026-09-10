@@ -66,6 +66,7 @@ import ipaddress
 import json
 import logging
 import secrets
+import select
 import socket
 import struct
 import threading
@@ -160,6 +161,29 @@ def _local_ips() -> set[str]:
     return ips
 
 
+def _broadcast_from_all_interfaces(payload: bytes, port: int):
+    """Send payload to the LAN broadcast address once per local interface.
+
+    A single unbound (0.0.0.0) broadcast send leaves the OS's routing table
+    to pick the egress interface via the default route -- on a real machine
+    that's very often *not* the LAN adapter, since any VPN client, Docker,
+    Hyper-V, or VirtualBox virtual adapter routinely takes that spot. The
+    broadcast then goes out silently nowhere useful, no error either side.
+    Binding a send explicitly to each real local IP forces it out that
+    specific interface, sidestepping the ambiguity entirely."""
+    for ip in _local_ips():
+        if ip.startswith("127."):
+            continue
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            s.bind((ip, 0))
+            s.sendto(payload, ("255.255.255.255", port))
+            s.close()
+        except OSError:
+            log.debug("[udp] broadcast via %s failed", ip, exc_info=True)
+
+
 def _is_lan_source(host: str) -> bool:
     """True for a private, non-loopback address -- i.e. one that could only
     have reached us over the local network, never routed from the public
@@ -197,45 +221,65 @@ def probe_lan_ports(genesis_hash: str, wait: float = 1.5,
     port. Standalone (no running UDPTransport needed): main.py calls this
     before it has even chosen its own port yet.
 
+    Sends and listens on one socket per local interface (see
+    _broadcast_from_all_interfaces's docstring for why a single unbound
+    socket isn't reliable), so a reply reaching any of this machine's real
+    interfaces is caught regardless of which one the OS would have picked
+    by default.
+
     Returns whatever data ports currently-running nodes with the same
     genesis reply with. Best-effort: an empty result just means "nobody
     answered in time" or broadcast doesn't reach on this network -- never
     a reason to fail startup."""
     found: set[int] = set()
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.bind(("0.0.0.0", 0))
-        sock.settimeout(0.5)
-    except OSError:
-        log.debug("[udp] LAN port probe socket setup failed", exc_info=True)
+    ifaces = [ip for ip in _local_ips() if not ip.startswith("127.")] or ["0.0.0.0"]
+    socks = []
+    for ip in ifaces:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            s.bind((ip, 0))
+            socks.append(s)
+        except OSError:
+            log.debug("[udp] LAN port probe socket setup failed for %s", ip, exc_info=True)
+    if not socks:
         return found
     try:
         payload = _encode({"type": "probe", "genesis": genesis_hash})
-        sock.sendto(payload, ("255.255.255.255", disc_port))
-        deadline = time.monotonic() + wait
-        while time.monotonic() < deadline:
+        for s in socks:
             try:
-                data, sender = sock.recvfrom(2048)
-            except socket.timeout:
-                continue
+                s.sendto(payload, ("255.255.255.255", disc_port))
             except OSError:
+                log.debug("[udp] LAN port probe send failed", exc_info=True)
+
+        deadline = time.monotonic() + wait
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 break
             try:
-                parsed = _decode(data)
-            except Exception:
-                continue
-            if not isinstance(parsed, dict) or parsed.get("genesis") != genesis_hash:
-                continue
-            if not _is_lan_source(sender[0]):
-                continue
-            port = parsed.get("port")
-            if isinstance(port, int) and 0 < port <= 65535:
-                found.add(port)
-    except OSError:
-        log.debug("[udp] LAN port probe failed", exc_info=True)
+                readable, _, _ = select.select(socks, [], [], remaining)
+            except OSError:
+                break
+            for s in readable:
+                try:
+                    data, sender = s.recvfrom(2048)
+                except OSError:
+                    continue
+                try:
+                    parsed = _decode(data)
+                except Exception:
+                    continue
+                if not isinstance(parsed, dict) or parsed.get("genesis") != genesis_hash:
+                    continue
+                if not _is_lan_source(sender[0]):
+                    continue
+                port = parsed.get("port")
+                if isinstance(port, int) and 0 < port <= 65535:
+                    found.add(port)
     finally:
-        sock.close()
+        for s in socks:
+            s.close()
     return found
 
 
@@ -553,15 +597,17 @@ class UDPTransport:
         regardless of what data port either of us actually runs on (two
         nodes behind the same router commonly differ on purpose, since a
         router can only port-forward one external port to one internal
-        machine). No-op if the discovery socket never came up."""
+        machine). No-op if the discovery socket never came up. Sent from
+        every local interface (see _broadcast_from_all_interfaces) rather
+        than through self._disc_sock's own wildcard bind, since sending
+        from an unbound socket leaves interface selection to the OS's
+        default route -- unreliable on a machine with any other active
+        network adapter (VPN, Docker, Hyper-V, VirtualBox, ...)."""
         if not self._disc_sock:
             return
-        try:
-            payload = _encode({"type": "announce", "genesis": self.genesis_hash,
-                               "port": self.port})
-            self._disc_sock.sendto(payload, ("255.255.255.255", LAN_DISCOVERY_PORT))
-        except OSError:
-            log.debug("[udp] LAN discover broadcast failed", exc_info=True)
+        payload = _encode({"type": "announce", "genesis": self.genesis_hash,
+                           "port": self.port})
+        _broadcast_from_all_interfaces(payload, LAN_DISCOVERY_PORT)
 
     def _disc_recv_loop(self):
         while self._running:
