@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from peer_udp import MT_GETINFO, MT_INFO, MT_TX, UDPTransport
+from peer_udp import MT_GETINFO, MT_INFO, MT_PING, MT_PONG, MT_TX, UDPTransport
 
 
 def _make_transport(on_tx):
@@ -107,3 +107,58 @@ def test_info_reply_from_older_peer_without_wallet_or_version_field():
 
     assert udp._info_results[9] == {"height": 10, "tip_hash": "abc",
                                     "wallet": "", "version": ""}
+
+
+# ---------------------------------------------------------------------------
+# LAN auto-admit: a private-source PING or PONG proves direct local
+# reachability, so it's admitted on sight instead of needing a manual add.
+# ---------------------------------------------------------------------------
+
+def test_ping_from_lan_source_admits_to_pool():
+    pool = MagicMock()
+    udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
+                       on_tx=MagicMock(), on_peers=MagicMock(), pool=pool)
+    udp._send_one = MagicMock()
+    udp._dispatch(MT_PING, 1, {"genesis": udp.genesis_hash}, ("192.168.1.42", 8333))
+    pool.add.assert_called_once_with("192.168.1.42:8333", allow_private=True)
+
+
+def test_pong_from_lan_source_admits_to_pool():
+    pool = MagicMock()
+    udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
+                       on_tx=MagicMock(), on_peers=MagicMock(), pool=pool)
+    udp._dispatch(MT_PONG, 2, {"observed": "192.168.1.42:8333"}, ("192.168.1.42", 8333))
+    pool.add.assert_called_once_with("192.168.1.42:8333", allow_private=True)
+
+
+def test_ping_from_public_source_does_not_bypass_pool_validation():
+    """A public-IP sender still goes through PeerPool.add's own routability
+    check (allow_private only makes sense for genuinely private sources)."""
+    pool = MagicMock()
+    udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
+                       on_tx=MagicMock(), on_peers=MagicMock(), pool=pool)
+    udp._send_one = MagicMock()
+    udp._dispatch(MT_PING, 3, {"genesis": udp.genesis_hash}, ("8.8.8.8", 8333))
+    pool.add.assert_not_called()
+
+
+def test_ping_from_loopback_does_not_self_admit():
+    pool = MagicMock()
+    udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
+                       on_tx=MagicMock(), on_peers=MagicMock(), pool=pool)
+    udp._send_one = MagicMock()
+    udp._dispatch(MT_PING, 4, {"genesis": udp.genesis_hash}, ("127.0.0.1", 8333))
+    pool.add.assert_not_called()
+
+
+def test_broadcast_discover_sends_ping_to_broadcast_address():
+    udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
+                       on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
+    sent = []
+    udp._send_one = lambda msg_type, msg_id, data, target: sent.append((msg_type, data, target))
+    udp.broadcast_discover()
+    assert len(sent) == 1
+    msg_type, data, target = sent[0]
+    assert msg_type == MT_PING
+    assert data["genesis"] == udp.genesis_hash
+    assert target == ("255.255.255.255", 9999)

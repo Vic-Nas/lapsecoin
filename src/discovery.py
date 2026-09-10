@@ -7,6 +7,13 @@ Removes all HTTP probing and UPnP. Candidate pipeline now:
   4. Exchange peer lists via UDP PEERS message
   5. Admit to PeerPool
 
+Separately, a periodic LAN broadcast PING (UDPTransport.broadcast_discover)
+finds nodes on the same local network directly -- no DHT round-trip and no
+NAT/punching, since a private-source reply proves direct reachability on
+sight (see peer_udp._is_lan_source). This is what lets two machines behind
+the same router/public IP peer automatically instead of needing a manual
+add.
+
 Hole punching
 -------------
 When PING times out (node is behind NAT) we attempt a hole punch
@@ -44,6 +51,7 @@ SAVE_INTERVAL        = 300
 GET_INTERVAL         = 60
 STAGE_FLUSH_INTERVAL = 15
 PUT_DELAY_LOCAL      = 30
+LAN_BROADCAST_INTERVAL = 60   # seconds between LAN broadcast discovery pings
 
 PUNCH_ATTEMPTS       = 3     # how many relays to try when direct ping fails
 PUNCH_WAIT           = 2.5   # seconds to wait after punch before re-pinging
@@ -127,6 +135,7 @@ class Discovery:
         last_get   = now
         last_put   = now - PUT_REFRESH_INTERVAL + put_delay
         last_save  = now
+        last_lan   = now - LAN_BROADCAST_INTERVAL
 
         self._dht.get_all(ses, my_slot)
         self._dht.torrent_get_peers(ses)
@@ -163,6 +172,10 @@ class Discovery:
                 last_put = now
 
             self.pool.evict_stale()
+
+            if now - last_lan >= LAN_BROADCAST_INTERVAL and not at_max:
+                self.udp.broadcast_discover()
+                last_lan = now
 
             if now - last_save >= SAVE_INTERVAL:
                 self._save_peer_cache()

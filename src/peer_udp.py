@@ -47,9 +47,13 @@ Public interface
   .request_sync(addr, from_h) request chain from peer, returns list|None
   .send_peers(addr, peers)    send peer list to addr
   .punch_via(relay, target)   ask relay to coordinate punch to target
+  .broadcast_discover()       LAN broadcast PING; peers with the same
+                               genesis on this network segment self-admit,
+                               no DHT/NAT/punching needed
   .our_external_addr          best-known external ip:port (str or None)
 """
 
+import ipaddress
 import json
 import logging
 import secrets
@@ -111,6 +115,18 @@ HDR_FMT  = "!BIHh"  # chunk_total is signed, but MT_ACK is what actually
 # distinguishes an ack datagram (see _handle_ack) -- it's just an ordinary
 # single-chunk (chunk_total=1) message of that type, no sentinel value needed.
 HDR_SIZE = struct.calcsize(HDR_FMT)
+
+
+def _is_lan_source(host: str) -> bool:
+    """True for a private, non-loopback address -- i.e. one that could only
+    have reached us over the local network, never routed from the public
+    internet. Loopback is excluded so a node never treats its own broadcast
+    echo (same host, different process) as a peer."""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_private and not ip.is_loopback
 
 
 def _encode(data: dict) -> bytes:
@@ -267,6 +283,7 @@ class UDPTransport:
     def start(self):
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
         self._sock.bind(("0.0.0.0", self.port))
         self._sock.settimeout(RECV_TIMEOUT)
         self._running = True
@@ -396,6 +413,18 @@ class UDPTransport:
         with self._info_lock:
             self._info_events.pop(msg_id, None)
         return None
+
+    def broadcast_discover(self):
+        """Fire a PING at the LAN broadcast address so other nodes with the
+        same genesis on this network segment can find us without any
+        DHT/NAT involvement -- they're directly reachable, no punching
+        needed. Harmless no-op on a network that drops broadcast traffic."""
+        try:
+            self._send_one(MT_PING, self._new_msg_id(),
+                           {"genesis": self.genesis_hash},
+                           ("255.255.255.255", self.port))
+        except OSError:
+            log.debug("[udp] broadcast discover send failed", exc_info=True)
 
     def punch_direct(self, target_addr: str):
         """Fire UDP bursts toward target to open our NAT hole.
@@ -533,6 +562,13 @@ class UDPTransport:
                 announced = data.get("from", "")
                 if announced and self._on_peer_hint:
                     self._on_peer_hint(announced)
+                # A private-range source could only have reached us over the
+                # local network (never routed off the public internet), so
+                # it's admissible on sight -- this is what makes broadcast
+                # discovery (and any direct LAN ping) actually peer up,
+                # without waiting on the DHT/punch pipeline at all.
+                if _is_lan_source(sender[0]):
+                    self._pool.add(sender_addr, allow_private=True)
 
         elif msg_type == MT_PONG:
             observed = data.get("observed", "")
@@ -542,6 +578,8 @@ class UDPTransport:
                 if matched:
                     self._pong_addrs[msg_id] = observed
                     self._pong_events[msg_id].set()
+            if _is_lan_source(sender[0]):
+                self._pool.add(sender_addr, allow_private=True)
 
         elif msg_type == MT_PEERS:
             peers = data.get("peers", [])
