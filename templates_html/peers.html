@@ -6,9 +6,7 @@
   <div class="card-title">Add a peer manually</div>
   {% if lan_addr %}
   <div style="color:var(--muted);font-size:.85rem;margin-bottom:.5rem">
-    This machine's local network address is <span class="hash-short" style="display:inline">{{ lan_addr }}</span>.
-    Two machines on the same network (e.g. behind the same router) usually can't reach each other
-    through their shared public IP -- add each other using this local address instead.
+    This machine's local network address: <span class="hash-short" style="display:inline">{{ lan_addr }}</span>
   </div>
   {% endif %}
   <form id="add-peer-form" style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
