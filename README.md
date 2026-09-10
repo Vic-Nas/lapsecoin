@@ -65,7 +65,7 @@ Produces a self-contained binary in `dist/`. Requires cmake, ninja, and a C comp
 | Public | `8333` (`--port`) | `0.0.0.0` | Node UI + peer API. Safe to expose. Send disabled. |
 | Private | `port+2` (`--private-port`) | `127.0.0.1` | Wallet UI. **Never expose.** Full access, including Send. |
 
-`port+3` is reserved for the DHT subsystem (libtorrent), so don't bind other services to it.
+`port+3` is reserved for the DHT subsystem (libtorrent). Port `18334` is fixed and reserved across every node for same-network peer discovery (broadcast-based, finds other LapseCoin nodes on your LAN automatically regardless of their own port). Don't bind other services to either.
 
 The passphrase is required to start the node. By default you're prompted via `getpass` (nothing touches shell history or `ps`). For Docker/systemd/CI, set it non-interactively instead:
 

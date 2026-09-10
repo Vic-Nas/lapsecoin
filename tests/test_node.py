@@ -892,3 +892,36 @@ class TestRunCycleSyncPolling:
         node._run_cycle()
 
         commit_spy.assert_called_once()
+
+    def test_status_line_reflects_vdf_computation(self, node_env, monkeypatch):
+        node, *_ = node_env
+        monkeypatch.setattr(node_mod, "SYNC_POLL_INTERVAL_SECONDS", 0.05)
+        monkeypatch.setattr(node_mod.vdf_mod, "evaluate", self._slow_fake_evaluate(0.05))
+
+        node._run_cycle()
+
+        assert "block 1" in node.status_line
+
+    def test_status_line_updates_on_heartbeat(self, node_env, monkeypatch):
+        """Without a heartbeat, the status line (and log) would sit on
+        whatever it said at cycle start for the entire VDF wait -- update it
+        partway through too, not just at start/end. Snapshot status_line on
+        every wait-loop tick, since the final commit overwrites it by the
+        time _run_cycle() returns."""
+        node, *_ = node_env
+        monkeypatch.setattr(node_mod, "SYNC_POLL_INTERVAL_SECONDS", 0.05)
+        monkeypatch.setattr(node_mod, "VDF_HEARTBEAT_INTERVAL_SECONDS", 0.05)
+        monkeypatch.setattr(node_mod.vdf_mod, "evaluate", self._slow_fake_evaluate(0.3))
+
+        seen = []
+        real_drain = node._drain_queue
+
+        def spying_drain(*args, **kwargs):
+            seen.append(node.status_line)
+            return real_drain(*args, **kwargs)
+
+        monkeypatch.setattr(node, "_drain_queue", spying_drain)
+
+        node._run_cycle()
+
+        assert any("elapsed" in s for s in seen)

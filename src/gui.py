@@ -361,6 +361,7 @@ def run_status_window(node, udp, private_port, log_file):
     height_var = tk.StringVar(value="—")
     peers_var = tk.StringVar(value="—")
     mempool_var = tk.StringVar(value="—")
+    activity_var = tk.StringVar(value="starting…")
     error_var = tk.StringVar(value="")
 
     def _stat_row(row, label, var):
@@ -375,8 +376,12 @@ def run_status_window(node, udp, private_port, log_file):
     _stat_row(0, "Height", height_var)
     _stat_row(1, "Peers", peers_var)
     _stat_row(2, "Mempool", mempool_var)
+    ttk.Label(
+        status_frame, textvariable=activity_var, style="Dim.TLabel",
+        wraplength=360, font=("", 9, "italic"),
+    ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
     ttk.Label(status_frame, textvariable=error_var, style="Dim.TLabel", wraplength=360).grid(
-        row=3, column=0, columnspan=2, sticky="w", pady=(6, 0),
+        row=4, column=0, columnspan=2, sticky="w", pady=(6, 0),
     )
 
     def refresh():
@@ -385,6 +390,7 @@ def run_status_window(node, udp, private_port, log_file):
             height_var.set(f"{info['height']:,}")
             peers_var.set(f"{info['peer_count']:,}")
             mempool_var.set(f"{info['mempool_size']:,}")
+            activity_var.set(info.get("status") or "")
             error_var.set("")
         except Exception as e:
             error_var.set(f"status unavailable: {e}")

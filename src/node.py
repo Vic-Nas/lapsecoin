@@ -59,6 +59,11 @@ SYNC_POLL_INTERVAL_SECONDS = 10
 # this only matters for the failure case it's meant to bound.
 SYNC_POLL_INFO_TIMEOUT_SECONDS = 2.0
 
+# How often to log that the VDF is still running. Without this, the default
+# INFO log goes quiet for the entire ~2-3 minute wait between "[vdf] starting"
+# and "[vdf] proof ready", which reads as hung rather than working.
+VDF_HEARTBEAT_INTERVAL_SECONDS = 30
+
 # Recent-state cache: lets a shallow reorg resume from an already-computed
 # state instead of replaying the whole chain from genesis (see
 # _resume_point). Routine reorgs here are shallow -- a lost race resolves
@@ -165,6 +170,11 @@ class Node:
         self.cs   = self._load_cs()
         self.view = NodeView(self.cs)
 
+        # Short, human-readable line for the GUI status window / anything
+        # else that wants "what is this node doing right now" without
+        # scraping the log file.
+        self.status_line = "starting"
+
     # ------------------------------------------------------------------
     # Startup
     # ------------------------------------------------------------------
@@ -260,6 +270,7 @@ class Node:
             "can_mint":     v.state.compute_can_mint(),
             "block_reward": v.state.compute_block_reward(),
             "block_time_ratio": self.own_block_time_ratio(),
+            "status":       self.status_line,
         }
 
     def start(self, kek):
@@ -390,31 +401,45 @@ class Node:
         log.info("[vdf] starting height=%d  tip=%s  peers=%d  mempool=%d  pruned=%d",
                  cs.height + 1, cs.tip["hash"][:12],
                  self.pool.count(), self.mempool.size(), len(pruned))
+        self.status_line = f"computing VDF for block {cs.height + 1}"
 
         # Run VDF in a background thread so the node loop stays responsive
         # to tx submissions and peer messages during the ~120s evaluation.
         import concurrent.futures as _cf
         accumulated_blocks = []
         iterations = block_mod.get_vdf_iterations(cs.chain)
+        vdf_start = time.monotonic()
         with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
             _fut = _pool.submit(
                 vdf_mod.evaluate,
                 block_mod.vdf_challenge(cs.tip["hash"], self.addr), iterations)
             last_sync_check = time.monotonic()
+            last_heartbeat  = vdf_start
             while not _fut.done():
                 accumulated_blocks += self._drain_queue(timeout=1)
+                now = time.monotonic()
+                # The VDF itself gives no progress callback, so without this
+                # the log (and GUI status line) would otherwise go quiet for
+                # the whole multi-minute wait -- indistinguishable from hung.
+                if now - last_heartbeat >= VDF_HEARTBEAT_INTERVAL_SECONDS:
+                    elapsed = now - vdf_start
+                    log.info("[vdf] still computing  height=%d  elapsed=%.0fs",
+                             cs.height + 1, elapsed)
+                    self.status_line = (f"computing VDF for block {cs.height + 1} "
+                                        f"({elapsed:.0f}s elapsed)")
+                    last_heartbeat = now
                 # Re-check for a better peer chain periodically instead of only
                 # once at cycle start, so a lagging node converges in roughly
                 # this interval rather than waiting a full mining cycle per
                 # attempt. Still runs on this same thread -- see
                 # SYNC_POLL_INTERVAL_SECONDS's comment for why that matters.
-                if time.monotonic() - last_sync_check >= SYNC_POLL_INTERVAL_SECONDS:
+                if now - last_sync_check >= SYNC_POLL_INTERVAL_SECONDS:
                     self.syncer.check_and_sync(
                         self.cs.chain,
                         lambda chain: self.apply_better_chain(chain)[0],
                         info_timeout=SYNC_POLL_INFO_TIMEOUT_SECONDS,
                     )
-                    last_sync_check = time.monotonic()
+                    last_sync_check = now
             vdf_out, vdf_proof, vdf_seconds = _fut.result()
         log.info("[vdf] proof ready  height=%d  seconds=%.1f  iterations=%d",
                  cs.height + 1, vdf_seconds, iterations)
@@ -515,6 +540,8 @@ class Node:
         log.info("[commit] height=%d  hash=%s  tx=%d  builder=%s",
                  blk["height"], blk["hash"][:12], len(blk["transactions"]),
                  (blk.get("builder") or "")[:24])
+        won = blk.get("builder") == self.addr
+        self.status_line = f"block {blk['height']} {'won' if won else 'received'}"
 
     # ------------------------------------------------------------------
     # Queue
