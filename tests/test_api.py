@@ -145,8 +145,15 @@ class TestUpdateNav:
         return app.test_client().get("/peers").get_data(as_text=True)
 
     def test_no_link_when_no_update(self):
+        # Checks for the update link's own rendered element, not a loose
+        # "update" substring -- the page also renders a randomly generated
+        # wallet address (dot-joined words from a wordlist), which can
+        # coincidentally contain "update" and has nothing to do with what
+        # this test covers. The stylesheet always defines .version-alert
+        # regardless of whether the link renders, so match the actual
+        # element's opening tag, not just the class name appearing anywhere.
         html = self._render_page(None)
-        assert "update" not in html.lower()
+        assert 'class="version-alert"' not in html
 
     def test_minor_severity_label(self):
         html = self._render_page("minor")
