@@ -104,35 +104,30 @@ def race_window(chain):
 
 def race_odds(chain, own_seconds):
     """Race-odds page data: recent block intervals (a proxy for builder
-    build time), an outlier band, and this node's odds of beating the
-    field. own_seconds is this node's own median real VDF build time, or
-    None if it hasn't finished a build yet.
-
-    Intervals outside [window_median/2, window_median*2] are flagged but
-    never dropped -- excluded from the odds calculation, still shown.
+    build time) and this node's odds of beating the field. own_seconds is
+    this node's own median real VDF build time, or None if it hasn't
+    finished a build yet.
 
     Returns None if there's no window yet. Otherwise:
-      {"window": [(height, interval_seconds, in_band, builder), ...],
-       "median": float, "excluded": int,
-       "own_seconds": float or None, "odds_pct": float or None}
-    odds_pct is the percentage of in-band intervals own_seconds beats.
+      {"window": [(height, interval_seconds, builder), ...],
+       "median": float, "own_seconds": float or None,
+       "odds_pct": float or None}
+    odds_pct is the percentage of this window's intervals own_seconds beats.
+    A real network stall shows up as one unusually long interval that
+    own_seconds trivially beats -- display-only, so that's an acceptable
+    accuracy tradeoff for not special-casing outliers.
     """
     window = race_window(chain)
     if not window:
         return None
     median = statistics.median(i for _, i, _ in window)
-    lo, hi = median / 2, median * 2
-    rows = [(h, i, lo <= i <= hi, b) for h, i, b in window]
-    excluded = sum(1 for _, _, in_band, _ in rows if not in_band)
 
     odds_pct = None
     if own_seconds is not None:
-        in_band = [i for _, i, ok, _ in rows if ok]
-        if in_band:
-            beaten = sum(1 for i in in_band if i > own_seconds)
-            odds_pct = 100.0 * beaten / len(in_band)
+        beaten = sum(1 for _, i, _ in window if i > own_seconds)
+        odds_pct = 100.0 * beaten / len(window)
 
-    return {"window": rows, "median": median, "excluded": excluded,
+    return {"window": window, "median": median,
             "own_seconds": own_seconds, "odds_pct": odds_pct}
 
 

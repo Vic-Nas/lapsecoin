@@ -344,8 +344,10 @@ _OTHER_COLOR = "var(--series-other)"
 def _race_chart(race):
     """Precompute SVG pixel geometry for the race-odds chart.
 
-    Axis range is adaptive: it hugs the in-band data (plus a small
-    margin), so out-of-band points clip to the plot edge instead.
+    Axis range hugs the window's actual min/max (plus a small margin) --
+    no outlier band or special-casing: a real network stall just shows up
+    as one tall point compressing the rest of the chart, an acceptable
+    accuracy tradeoff for a display-only page (see race_odds's docstring).
 
     Points are colored by builder to make dominance visible: the top 3
     builders (by block count in this window) each get a fixed, validated
@@ -360,8 +362,7 @@ def _race_chart(race):
     median = race["median"]
     own_seconds = race["own_seconds"]
 
-    in_band_values = [s for _, s, ok, _ in rows if ok]
-    domain = list(in_band_values) or [s for _, s, _, _ in rows]
+    domain = [s for _, s, _ in rows]
     if own_seconds is not None:
         domain.append(own_seconds)
     data_lo, data_hi = min(domain), max(domain)
@@ -378,17 +379,16 @@ def _race_chart(race):
         return _CHART_PAD_T + plot_h - frac * plot_h
 
     builder_counts = {}
-    for _, _, _, builder in rows:
+    for _, _, builder in rows:
         if builder:
             builder_counts[builder] = builder_counts.get(builder, 0) + 1
     top_builders = sorted(builder_counts, key=builder_counts.get, reverse=True)[:3]
     color_by_builder = {b: _BUILDER_COLOR_SLOTS[i] for i, b in enumerate(top_builders)}
 
     points = [{"x": round(x_at(idx), 1), "y": round(y_at(seconds), 1),
-               "in_band": in_band, "height": h, "seconds": seconds,
-               "clipped_high": seconds > axis_hi, "clipped_low": seconds < axis_lo,
+               "height": h, "seconds": seconds,
                "builder": builder, "color": color_by_builder.get(builder, _OTHER_COLOR)}
-              for idx, (h, seconds, in_band, builder) in enumerate(rows)]
+              for idx, (h, seconds, builder) in enumerate(rows)]
 
     legend = [{"label": b, "color": color_by_builder[b], "count": builder_counts[b]}
               for b in top_builders]
@@ -676,7 +676,7 @@ def _shared_read_only_routes(app, node, pool, limiter,
         if not race:
             return jsonify(None)
         return jsonify({
-            "median": race["median"], "excluded": race["excluded"],
+            "median": race["median"],
             "own_seconds": race["own_seconds"], "odds_pct": race["odds_pct"],
             "window_len": len(race["window"]), "chart": _race_chart(race),
         })

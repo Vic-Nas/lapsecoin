@@ -21,11 +21,6 @@
     <div class="stat-value" id="window-median-val">{{ "%.1f"|format(race.median) }}s</div>
     <div class="stat-sub" id="window-count">{{ race.window|length }} blocks</div>
   </div>
-  <div class="stat">
-    <div class="stat-label">Excluded outliers</div>
-    <div class="stat-value" id="excluded-val">{{ race.excluded }}</div>
-    <div class="stat-sub">outside 0.5x-2x median</div>
-  </div>
 </div>
 
 <div class="card">
@@ -45,20 +40,6 @@
     <text x="4" y="{{ t.y + 3 }}" font-size="10" fill="var(--ink-dim)">{{ "%.0f"|format(t.value) }}s</text>
     {% endfor %}
 
-    <line x1="{{ chart.points[0].x if chart.points else 0 }}" y1="{{ chart.median_y }}"
-          x2="{{ chart.width }}" y2="{{ chart.median_y }}"
-          stroke="var(--rule-lt)" stroke-width="1" stroke-dasharray="2,3"/>
-    <text x="{{ chart.width - 4 }}" y="{{ chart.median_y - 4 }}" font-size="10"
-          fill="var(--ink-dim)" text-anchor="end">window median {{ "%.0f"|format(race.median) }}s</text>
-
-    {% if chart.own_y is not none %}
-    <line x1="{{ chart.points[0].x if chart.points else 0 }}" y1="{{ chart.own_y }}"
-          x2="{{ chart.width }}" y2="{{ chart.own_y }}"
-          stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="5,4"/>
-    <text x="{{ chart.width - 4 }}" y="{{ chart.own_y - 4 }}" font-size="10"
-          fill="var(--accent)" text-anchor="end">self median{{ " (off scale)" if chart.own_clipped }}</text>
-    {% endif %}
-
     {% for p in chart.points %}
     {% if not loop.first %}
     {% set prev = chart.points[loop.index0 - 1] %}
@@ -69,13 +50,22 @@
     {% endif %}
     {% endfor %}
 
-    {% for p in chart.points if not p.in_band %}
-    <circle cx="{{ p.x }}" cy="{{ p.y }}" r="4.5" fill="var(--paper)"
-            stroke="{{ p.color }}" stroke-width="2">
-      <title>Block {{ p.height }}: {{ "%.1f"|format(p.seconds) }}s{{ " -- " ~ p.builder if p.builder }}
-        ({{ "above" if p.clipped_high else "below" }} chart range, excluded from odds)</title>
-    </circle>
-    {% endfor %}
+    <!-- Reference lines render last (on top of the data) so their labels
+         stay legible over whatever color the data line happens to be
+         passing through at that height. -->
+    <line x1="{{ chart.points[0].x if chart.points else 0 }}" y1="{{ chart.median_y }}"
+          x2="{{ chart.width }}" y2="{{ chart.median_y }}"
+          stroke="var(--ink-dim)" stroke-width="1.25" stroke-dasharray="4,3"/>
+    <text x="{{ chart.width - 4 }}" y="{{ chart.median_y - 4 }}" font-size="10" font-weight="600"
+          fill="var(--ink-dim)" text-anchor="end" paint-order="stroke" stroke="var(--paper)" stroke-width="3">window median {{ "%.0f"|format(race.median) }}s</text>
+
+    {% if chart.own_y is not none %}
+    <line x1="{{ chart.points[0].x if chart.points else 0 }}" y1="{{ chart.own_y }}"
+          x2="{{ chart.width }}" y2="{{ chart.own_y }}"
+          stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="5,4"/>
+    <text x="{{ chart.width - 4 }}" y="{{ chart.own_y - 4 }}" font-size="10" font-weight="600"
+          fill="var(--accent)" text-anchor="end" paint-order="stroke" stroke="var(--paper)" stroke-width="3">self median{{ " (off scale)" if chart.own_clipped }}</text>
+    {% endif %}
   </svg>
   </div>
   {% if chart.legend %}
@@ -90,10 +80,9 @@
   </div>
   {% endif %}
   <p class="stat-sub" style="margin-top:.4rem">
-    Block interval is a proxy for the winning builder's real build time. Hollow points fall
-    outside the 0.5x-2x median band (hover for the exact value); excluded from the odds
-    figure above, still shown here. Color marks the top 3 builders by block count in this
-    window; everyone else shares the muted "Other" color.
+    Block interval is a proxy for the winning builder's real build time. Color marks the
+    top 3 builders by block count in this window; everyone else shares the muted "Other"
+    color.
   </p>
 </div>
 <script>
@@ -111,12 +100,6 @@
       s += `<line x1="${x0}" y1="${t.y}" x2="${chart.width}" y2="${t.y}" stroke="var(--rule-lt)" stroke-width="0.5" opacity="0.6"/>`;
       s += `<text x="4" y="${t.y + 3}" font-size="10" fill="var(--ink-dim)">${fmt0(t.value)}s</text>`;
     });
-    s += `<line x1="${x0}" y1="${chart.median_y}" x2="${chart.width}" y2="${chart.median_y}" stroke="var(--rule-lt)" stroke-width="1" stroke-dasharray="2,3"/>`;
-    s += `<text x="${chart.width - 4}" y="${chart.median_y - 4}" font-size="10" fill="var(--ink-dim)" text-anchor="end">window median ${fmt0(medianVal)}s</text>`;
-    if (chart.own_y !== null) {
-      s += `<line x1="${x0}" y1="${chart.own_y}" x2="${chart.width}" y2="${chart.own_y}" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="5,4"/>`;
-      s += `<text x="${chart.width - 4}" y="${chart.own_y - 4}" font-size="10" fill="var(--accent)" text-anchor="end">self median${chart.own_clipped ? " (off scale)" : ""}</text>`;
-    }
     chart.points.forEach(function (p, i) {
       if (i === 0) return;
       const prev = chart.points[i - 1];
@@ -124,12 +107,14 @@
       s += `<line x1="${prev.x}" y1="${prev.y}" x2="${p.x}" y2="${p.y}" stroke="${p.color}" stroke-width="1.75">` +
            `<title>Block ${p.height}: ${fmt1(p.seconds)}s${label}</title></line>`;
     });
-    chart.points.filter(function (p) { return !p.in_band; }).forEach(function (p) {
-      const dir = p.clipped_high ? "above" : "below";
-      const label = p.builder ? " -- " + p.builder : "";
-      s += `<circle cx="${p.x}" cy="${p.y}" r="4.5" fill="var(--paper)" stroke="${p.color}" stroke-width="2">` +
-           `<title>Block ${p.height}: ${fmt1(p.seconds)}s${label} (${dir} chart range, excluded from odds)</title></circle>`;
-    });
+    // Reference lines/labels last -- on top of the data lines, see the
+    // matching comment in the server-rendered SVG above.
+    s += `<line x1="${x0}" y1="${chart.median_y}" x2="${chart.width}" y2="${chart.median_y}" stroke="var(--ink-dim)" stroke-width="1.25" stroke-dasharray="4,3"/>`;
+    s += `<text x="${chart.width - 4}" y="${chart.median_y - 4}" font-size="10" font-weight="600" fill="var(--ink-dim)" text-anchor="end" paint-order="stroke" stroke="var(--paper)" stroke-width="3">window median ${fmt0(medianVal)}s</text>`;
+    if (chart.own_y !== null) {
+      s += `<line x1="${x0}" y1="${chart.own_y}" x2="${chart.width}" y2="${chart.own_y}" stroke="var(--accent)" stroke-width="1.5" stroke-dasharray="5,4"/>`;
+      s += `<text x="${chart.width - 4}" y="${chart.own_y - 4}" font-size="10" font-weight="600" fill="var(--accent)" text-anchor="end" paint-order="stroke" stroke="var(--paper)" stroke-width="3">self median${chart.own_clipped ? " (off scale)" : ""}</text>`;
+    }
     return s;
   }
 
@@ -160,7 +145,6 @@
         data.own_seconds !== null ? fmt1(data.own_seconds) + "s" : "--";
       document.getElementById("window-median-val").textContent = fmt1(data.median) + "s";
       document.getElementById("window-count").textContent = data.window_len + " blocks";
-      document.getElementById("excluded-val").textContent = data.excluded;
 
       const svg = document.getElementById("odds-svg");
       if (svg) svg.innerHTML = renderChart(data.chart, data.median);

@@ -507,7 +507,7 @@ class TestRaceWindowBuilders:
     def test_race_odds_carries_builder_into_rows(self):
         chain = self._chain([0, 1, 0])
         race = block_mod.race_odds(chain, own_seconds=None)
-        assert [b for _, _, _, b in race["window"]] == [address(0), address(1), address(0)]
+        assert [b for _, _, b in race["window"]] == [address(0), address(1), address(0)]
 
 
 class TestRaceChartBuilderColors:
@@ -565,3 +565,29 @@ class TestRaceChartBuilderColors:
         colors_by_builder = {p["builder"]: p["color"] for p in chart["points"]}
         assert colors_by_builder[address(0)] == "var(--series-1)"
         assert colors_by_builder[address(1)] == "var(--series-2)"
+
+
+class TestRaceOddsNoOutlierBand:
+    """race_odds no longer flags or excludes outliers: every interval in
+    the window counts toward both the median and odds_pct."""
+
+    def test_no_excluded_key(self):
+        chain = [genesis()]
+        for h in range(1, 4):
+            chain.append(make_block(h, chain[-1]["hash"], []))
+        race = block_mod.race_odds(chain, own_seconds=None)
+        assert "excluded" not in race
+
+    def test_odds_pct_counts_every_interval_including_outliers(self):
+        """A block built long after its parent (e.g. a real network stall)
+        must still count in odds_pct's denominator, not get silently
+        dropped as an outlier."""
+        chain = [genesis()]
+        for h in range(1, 4):
+            chain.append(make_block(h, chain[-1]["hash"], [], timestamp_offset=150))
+        # One wildly long interval -- 10x the others.
+        chain.append(make_block(4, chain[-1]["hash"], [], timestamp_offset=1500))
+        race = block_mod.race_odds(chain, own_seconds=100.0)
+        assert len(race["window"]) == 4
+        # own_seconds=100 beats all 4 intervals (150,150,150,1500).
+        assert race["odds_pct"] == pytest.approx(100.0)
