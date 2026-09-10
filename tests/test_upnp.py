@@ -71,6 +71,44 @@ def test_map_port_one_protocol_failing_does_not_block_the_other():
         del sys.modules["miniupnpc"]
 
 
+def test_map_port_conflict_logs_warning(caplog):
+    """A ConflictInMappingEntry-style failure means another device on this
+    network already holds this port -- a second, broadcast-independent
+    signal for the same problem probe_lan_ports is meant to catch. Must
+    surface at WARNING, not get buried at debug with ordinary failures."""
+    fake = _install_fake_miniupnpc()
+    try:
+        import upnp
+        import logging
+
+        def side_effect(port, proto, *a, **kw):
+            raise RuntimeError("718 ConflictInMappingEntry")
+
+        fake.addportmapping.side_effect = side_effect
+        with caplog.at_level(logging.WARNING, logger="ec.upnp"):
+            upnp._map_port(8333, "LapseCoin")
+        assert any("already mapped" in r.message for r in caplog.records)
+    finally:
+        del sys.modules["miniupnpc"]
+
+
+def test_map_port_ordinary_failure_stays_at_debug(caplog):
+    fake = _install_fake_miniupnpc()
+    try:
+        import upnp
+        import logging
+
+        def side_effect(port, proto, *a, **kw):
+            raise RuntimeError("router does not support this action")
+
+        fake.addportmapping.side_effect = side_effect
+        with caplog.at_level(logging.WARNING, logger="ec.upnp"):
+            upnp._map_port(8333, "LapseCoin")
+        assert not any(r.levelno >= logging.WARNING for r in caplog.records)
+    finally:
+        del sys.modules["miniupnpc"]
+
+
 def test_map_port_no_router_found_skips_mapping():
     fake = _install_fake_miniupnpc(discover_result=0)
     try:

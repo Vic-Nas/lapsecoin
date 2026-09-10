@@ -325,6 +325,34 @@ def test_probe_lan_ports_collects_matching_replies():
     assert found == {8444}
 
 
+def test_probe_lan_ports_survives_a_dropped_first_probe():
+    """UDP has no delivery guarantee even on a working LAN -- simulate the
+    first probe packet vanishing (respond only from the second one
+    onward) and confirm the resend still gets a reply within the wait
+    window, instead of the whole check silently coming back empty."""
+    genesis = "a" * 64
+    responder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    responder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    responder.bind(("0.0.0.0", 0))
+    responder.settimeout(3)
+
+    def respond_from_second_probe():
+        responder.recvfrom(2048)  # first probe: dropped, no reply
+        data, sender = responder.recvfrom(2048)
+        parsed = _decode(data)
+        assert parsed == {"type": "probe", "genesis": genesis}
+        reply = _encode({"type": "announce", "genesis": genesis, "port": 8444})
+        responder.sendto(reply, sender)
+
+    t = threading.Thread(target=respond_from_second_probe, daemon=True)
+    t.start()
+    found = probe_lan_ports(genesis, wait=1.0, disc_port=responder.getsockname()[1])
+    t.join(timeout=3)
+    responder.close()
+
+    assert found == {8444}
+
+
 def test_probe_lan_ports_ignores_wrong_genesis():
     responder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     responder.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

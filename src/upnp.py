@@ -51,8 +51,23 @@ def _map_port(port, description):
             try:
                 u.addportmapping(port, proto, u.lanaddr, port, description, "")
                 mapped.append(proto)
-            except Exception:
-                log.debug("[upnp] %s mapping failed", proto, exc_info=True)
+            except Exception as e:
+                # The router itself -- via UPnP, not our own LAN broadcast --
+                # is a second, independent way to learn "something else on
+                # this network already has this port": a real conflict comes
+                # back as ConflictInMappingEntry (UPnP IGD spec), distinct
+                # from "router doesn't support this" or "no public IP to
+                # map" style failures. Worth surfacing at WARNING since our
+                # broadcast-based check can miss this silently (blocked by
+                # AP client isolation, a dropped packet, etc.) while this
+                # path doesn't depend on broadcast reaching anything at all.
+                if "conflict" in str(e).lower():
+                    log.warning("[upnp] port %d (%s) already mapped to another "
+                               "device on this network -- possibly another "
+                               "LapseCoin node; consider using --port to pick "
+                               "a different one", port, proto)
+                else:
+                    log.debug("[upnp] %s mapping failed", proto, exc_info=True)
         if mapped:
             log.info("[upnp] mapped external port %d (%s) -> %s:%d",
                      port, "+".join(mapped), u.lanaddr, port)

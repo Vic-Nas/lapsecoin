@@ -244,7 +244,8 @@ def probe_lan_ports(genesis_hash: str, wait: float = 1.5,
             log.debug("[udp] LAN port probe socket setup failed for %s", ip, exc_info=True)
     if not socks:
         return found
-    try:
+
+    def _send_probe():
         payload = _encode({"type": "probe", "genesis": genesis_hash})
         for s in socks:
             try:
@@ -252,13 +253,28 @@ def probe_lan_ports(genesis_hash: str, wait: float = 1.5,
             except OSError:
                 log.debug("[udp] LAN port probe send failed", exc_info=True)
 
+    try:
+        # UDP has no delivery guarantee even on a fully working LAN -- a
+        # single dropped broadcast would otherwise look identical to "no
+        # other node here". Re-send a couple more times across the wait
+        # window rather than betting the whole check on one packet; replies
+        # are naturally deduplicated since found is a set.
+        RESEND_COUNT = 3
+        _send_probe()
         deadline = time.monotonic() + wait
+        next_resend = time.monotonic() + wait / RESEND_COUNT
+        resends_left = RESEND_COUNT - 1
+
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
+            if resends_left > 0 and time.monotonic() >= next_resend:
+                _send_probe()
+                resends_left -= 1
+                next_resend += wait / RESEND_COUNT
             try:
-                readable, _, _ = select.select(socks, [], [], remaining)
+                readable, _, _ = select.select(socks, [], [], min(remaining, 0.2))
             except OSError:
                 break
             for s in readable:
