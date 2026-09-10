@@ -66,6 +66,8 @@
   }
   .rewards-badge.is-active { color: var(--gain); border-color: var(--gain); }
   a.rewards-badge:hover { color: var(--accent); border-color: var(--accent); text-decoration: none; }
+  @keyframes rewards-blink { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+  .rewards-badge.needs-attention { animation: rewards-blink 1.4s ease-in-out infinite; }
   @media (max-width: 640px) {
     .masthead { padding: .35rem 1rem .25rem; }
     .masthead-title { font-size: 1.25rem; }
@@ -295,5 +297,20 @@
 <div class="page">
 {% block content %}{% endblock %}
 </div>
+{% if is_private and rewards_remaining_lapse <= 0 %}
+<script>
+(function () {
+  var KEY = "lapsecoin_rewards_badge_seen";
+  var badge = document.querySelector(".rewards-badge");
+  if (!badge) return;
+  try {
+    if (!localStorage.getItem(KEY)) badge.classList.add("needs-attention");
+    badge.addEventListener("click", function () {
+      try { localStorage.setItem(KEY, "1"); } catch (e) {}
+    });
+  } catch (e) { /* localStorage unavailable, e.g. private browsing -- skip quietly */ }
+})();
+</script>
+{% endif %}
 </body>
 </html>

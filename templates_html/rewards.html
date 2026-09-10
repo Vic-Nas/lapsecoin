@@ -5,12 +5,9 @@
 <div class="card">
   <div class="card-title">What this does</div>
   <div class="stat-label" style="margin-bottom:0">
-    The network is still small and new, so some peers are online but can't win
-    blocks yet. Turning this on shares a slice of your own balance with them,
-    a little bit every hour, straight from your wallet, no fees or middlemen.
-    It costs you a small piece of your balance and helps the network stay
-    healthier while it's young. Off by default. Turn it on any time by
-    setting a budget below, and off again by setting it back to 0.
+    Shares a small slice of your balance each hour with peers who can't win
+    blocks yet, straight from your wallet. Off by default: set a budget below
+    to turn it on, back to 0 to turn it off.
   </div>
 </div>
 
@@ -50,9 +47,8 @@
 <div class="card">
   <div class="card-title">Settings</div>
   <div class="stat-label" style="margin-bottom:.75rem">
-    The budget is a running balance, not a one-time payment: it pays out a
-    little each hour to peers who need it, until it runs out or you change it.
-    Your current balance is {{ "%.4f"|format(balance_lapse) }} LAPSE.
+    Pays out a little each hour until the budget below runs out.
+    Your balance: {{ "%.4f"|format(balance_lapse) }} LAPSE.
   </div>
   <form method="POST">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -63,9 +59,8 @@
     </div>
     {% if suggested_lapse > 0 %}
     <div class="stat-sub" style="margin-bottom:.75rem">
-      Not sure how much? A light starting point is 5% of your balance,
-      {{ "%.4f"|format(suggested_lapse) }} LAPSE.
-      <a href="#" onclick="document.getElementById('budget_lapse').value='{{ '%.4f'|format(suggested_lapse) }}'; return false;">Use this</a>
+      Try 5% of your balance ({{ "%.4f"|format(suggested_lapse) }} LAPSE):
+      <a href="#" onclick="document.getElementById('budget_lapse').value='{{ '%.4f'|format(suggested_lapse) }}'; return false;">use this</a>
     </div>
     {% endif %}
     <button type="submit">Save</button>
