@@ -81,7 +81,7 @@ class DHTDiscovery:
                     data = json.loads(raw)
                     addr = data.get("addr", "")
                     if addr and ":" in addr:
-                        log.debug("[dht] BEP44 candidate  addr=%s", addr)
+                        log.info("[dht] BEP44 candidate  addr=%s", addr)
                         self._enqueue(addr)
                 except Exception:
                     pass
@@ -89,7 +89,7 @@ class DHTDiscovery:
                 try:
                     for ep in a.peers():
                         addr = f"{ep.address()}:{ep.port()}"
-                        log.debug("[dht] torrent candidate  addr=%s", addr)
+                        log.info("[dht] torrent candidate  addr=%s", addr)
                         self._enqueue(addr)
                 except Exception:
                     pass

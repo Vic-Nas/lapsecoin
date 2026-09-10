@@ -252,7 +252,7 @@ class Discovery:
         if not fresh:
             return
 
-        log.debug("[peer] flushing %d candidates", len(fresh))
+        log.info("[peer] flushing %d candidate(s)  addrs=%s", len(fresh), fresh)
 
         admitted = 0
         for addr in fresh:
@@ -285,6 +285,8 @@ class Discovery:
 
         if admitted:
             log.info("[peer] admitted %d peers  pool=%d", admitted, self.pool.count())
+        else:
+            log.info("[peer] tried %d candidate(s), none reachable", len(fresh))
 
     def _ping_and_admit(self, addr: str) -> bool:
         """UDP PING addr. If PONG arrives, exchange peers and admit. Returns True on success."""
