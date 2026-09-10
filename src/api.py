@@ -834,8 +834,13 @@ def create_private_app(node, pool, private_port=8334, public_port=8333,
 
     @app.route("/rewards", methods=["GET", "POST"])
     def rewards():
+        balance_lapse = node.view.state.get_balance(node.addr) / TICKS_PER_LAPSE
         ctx = dict(title="Rewards", csrf_token=csrf_token,
-                   alert_ok="", alert_err="", rewarder_available=rewarder is not None)
+                   alert_ok="", alert_err="", rewarder_available=rewarder is not None,
+                   balance_lapse=balance_lapse,
+                   # A light, non-binding starting point, not a push toward any
+                   # particular amount: 5% of the current balance.
+                   suggested_lapse=balance_lapse * 0.05)
         if rewarder is None:
             return render_template("rewards.html", **ctx)
 

@@ -2,6 +2,18 @@
 {% block content %}
 <h2>Rewards</h2>
 
+<div class="card">
+  <div class="card-title">What this does</div>
+  <div class="stat-label" style="margin-bottom:0">
+    The network is still small and new, so some peers are online but can't win
+    blocks yet. Turning this on shares a slice of your own balance with them,
+    a little bit every hour, straight from your wallet, no fees or middlemen.
+    It costs you a small piece of your balance and helps the network stay
+    healthier while it's young. Off by default. Turn it on any time by
+    setting a budget below, and off again by setting it back to 0.
+  </div>
+</div>
+
 {% if not rewarder_available %}
 <div class="card">
   <div class="card-title">Unavailable</div>
@@ -38,10 +50,9 @@
 <div class="card">
   <div class="card-title">Settings</div>
   <div class="stat-label" style="margin-bottom:.75rem">
-    Pays currently-active peers that haven't out-mined this node recently and
-    hold less than the budget below, once an hour, from this node's own
-    balance. Set a budget above zero to turn it on; set it back to 0 to turn
-    it off. 0 by default.
+    The budget is a running balance, not a one-time payment: it pays out a
+    little each hour to peers who need it, until it runs out or you change it.
+    Your current balance is {{ "%.4f"|format(balance_lapse) }} LAPSE.
   </div>
   <form method="POST">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -50,6 +61,13 @@
       <input type="number" id="budget_lapse" name="budget_lapse" min="0" step="any"
              value="{{ '%.4f'|format(remaining_lapse) }}">
     </div>
+    {% if suggested_lapse > 0 %}
+    <div class="stat-sub" style="margin-bottom:.75rem">
+      Not sure how much? A light starting point is 5% of your balance,
+      {{ "%.4f"|format(suggested_lapse) }} LAPSE.
+      <a href="#" onclick="document.getElementById('budget_lapse').value='{{ '%.4f'|format(suggested_lapse) }}'; return false;">Use this</a>
+    </div>
+    {% endif %}
     <button type="submit">Save</button>
   </form>
 </div>
