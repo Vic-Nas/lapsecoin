@@ -1,5 +1,5 @@
-# Generated icons (produced by make icons from scorchcoin.svg)
-scorchcoin.png
+# Generated icons (produced by make icons from lapsecoin.svg)
+lapsecoin.png
 favicon.ico
 
 # Build artifacts
@@ -15,10 +15,10 @@ __pycache__/
 *.egg-info/
 
 # Runtime data
-scorchcoin_chain.db
-scorchcoin_chain.db-shm
-scorchcoin_chain.db-wal
-scorchcoin_key.json
+lapsecoin_chain.db
+lapsecoin_chain.db-shm
+lapsecoin_chain.db-wal
+lapsecoin_key.json
 
 # Uptime-reward tracked-budget state
 lapsecoin_rewards.json
