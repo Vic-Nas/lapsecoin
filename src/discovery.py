@@ -7,12 +7,15 @@ Removes all HTTP probing and UPnP. Candidate pipeline now:
   4. Exchange peer lists via UDP PEERS message
   5. Admit to PeerPool
 
-Separately, a periodic LAN broadcast PING (UDPTransport.broadcast_discover)
-finds nodes on the same local network directly -- no DHT round-trip and no
-NAT/punching, since a private-source reply proves direct reachability on
-sight (see peer_udp._is_lan_source). This is what lets two machines behind
-the same router/public IP peer automatically instead of needing a manual
-add.
+Separately, a periodic LAN broadcast (UDPTransport.broadcast_discover) finds
+nodes on the same local network directly -- no DHT round-trip and no
+NAT/punching. It announces our own data port on a small fixed
+LAN_DISCOVERY_PORT every node also listens on, so two nodes on the same
+network that happen to run on different data ports (e.g. two machines
+behind the same router, each with its own port-forward) still find each
+other; a private-source reply then proves direct reachability on sight
+(see peer_udp._is_lan_source). This is what lets two machines behind the
+same router/public IP peer automatically instead of needing a manual add.
 
 Hole punching
 -------------

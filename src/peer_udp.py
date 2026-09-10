@@ -47,9 +47,11 @@ Public interface
   .request_sync(addr, from_h) request chain from peer, returns list|None
   .send_peers(addr, peers)    send peer list to addr
   .punch_via(relay, target)   ask relay to coordinate punch to target
-  .broadcast_discover()       LAN broadcast PING; peers with the same
-                               genesis on this network segment self-admit,
-                               no DHT/NAT/punching needed
+  .broadcast_discover()       announce our data port on the shared
+                               LAN_DISCOVERY_PORT; peers with the same
+                               genesis on this network segment find and
+                               ping us back regardless of their own data
+                               port, no DHT/NAT/punching needed
   .our_external_addr          best-known external ip:port (str or None)
 """
 
@@ -83,6 +85,17 @@ MAX_CHUNK_SIZE   = 1400   # bytes, safe below MTU
 RECV_TIMEOUT     = 2.0    # seconds select/recvfrom timeout
 SYNC_TIMEOUT     = 30.0   # seconds to wait for a full sync response
 PING_TIMEOUT     = 8.0    # seconds to wait for PONG
+
+# LAN discovery: a small fixed port every node also listens on, separate
+# from its actual data port (self.port, which may be anything -- two nodes
+# behind the same router commonly use different ports on purpose, since a
+# router can only port-forward one external port to one internal machine).
+# Announcing "I'm on port X" over this shared, well-known port lets nodes on
+# the same network segment find each other regardless of what data port
+# either one runs on.
+LAN_DISCOVERY_PORT = 8334
+
+PORT_BIND_RETRIES = 5   # how many ascending ports to try if the requested one is taken
 
 # Caps against a spoofed-source amplification attack: an attacker who forges
 # a peer's source address in a GETSYNC and requests the whole chain would
@@ -296,6 +309,7 @@ class UDPTransport:
         self._get_tip_fn    = None  # set by main after node init
         self._on_peer_hint  = None  # set by discovery; called when PING includes "from"
         self._local_ips: set[str] = set()  # populated in start(); guards against self-admit
+        self._disc_sock    = None  # LAN discovery broadcast/listen socket (LAN_DISCOVERY_PORT)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -305,19 +319,55 @@ class UDPTransport:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        self._sock.bind(("0.0.0.0", self.port))
+        for candidate in range(self.port, self.port + PORT_BIND_RETRIES):
+            try:
+                self._sock.bind(("0.0.0.0", candidate))
+                break
+            except OSError:
+                if candidate == self.port + PORT_BIND_RETRIES - 1:
+                    raise
+        if self._sock.getsockname()[1] != self.port:
+            log.warning("[udp] port %d in use, bound to %d instead",
+                        self.port, self._sock.getsockname()[1])
+            self.port = self._sock.getsockname()[1]
         self._sock.settimeout(RECV_TIMEOUT)
         self._local_ips = _local_ips()
         self._running = True
         t = threading.Thread(target=self._recv_loop, daemon=True, name="udp-recv")
         t.start()
         log.info("[udp] listening on 0.0.0.0:%d", self.port)
+        self._start_lan_discovery()
+
+    def _start_lan_discovery(self):
+        """Best-effort: a second small socket on the shared, fixed
+        LAN_DISCOVERY_PORT, decoupled from self.port (which may differ
+        between two nodes on the same network on purpose). Failing to bind
+        it (e.g. another local process already holds it) just means no LAN
+        auto-discovery for this node -- never fatal."""
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.bind(("0.0.0.0", LAN_DISCOVERY_PORT))
+            sock.settimeout(RECV_TIMEOUT)
+        except OSError:
+            log.debug("[udp] LAN discovery port %d unavailable, skipping",
+                      LAN_DISCOVERY_PORT, exc_info=True)
+            return
+        self._disc_sock = sock
+        threading.Thread(target=self._disc_recv_loop, daemon=True,
+                         name="udp-lan-disc").start()
 
     def stop(self):
         self._running = False
         if self._sock:
             try:
                 self._sock.close()
+            except Exception:
+                pass
+        if self._disc_sock:
+            try:
+                self._disc_sock.close()
             except Exception:
                 pass
         self._executor.shutdown(wait=False)
@@ -437,16 +487,50 @@ class UDPTransport:
         return None
 
     def broadcast_discover(self):
-        """Fire a PING at the LAN broadcast address so other nodes with the
-        same genesis on this network segment can find us without any
-        DHT/NAT involvement -- they're directly reachable, no punching
-        needed. Harmless no-op on a network that drops broadcast traffic."""
+        """Announce our data port on the shared LAN_DISCOVERY_PORT so other
+        nodes with the same genesis on this network segment can find us --
+        regardless of what data port either of us actually runs on (two
+        nodes behind the same router commonly differ on purpose, since a
+        router can only port-forward one external port to one internal
+        machine). No-op if the discovery socket never came up."""
+        if not self._disc_sock:
+            return
         try:
-            self._send_one(MT_PING, self._new_msg_id(),
-                           {"genesis": self.genesis_hash},
-                           ("255.255.255.255", self.port))
+            payload = _encode({"genesis": self.genesis_hash, "port": self.port})
+            self._disc_sock.sendto(payload, ("255.255.255.255", LAN_DISCOVERY_PORT))
         except OSError:
-            log.debug("[udp] broadcast discover send failed", exc_info=True)
+            log.debug("[udp] LAN discover broadcast failed", exc_info=True)
+
+    def _disc_recv_loop(self):
+        while self._running:
+            try:
+                data, sender = self._disc_sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            self._executor.submit(self._handle_disc_announce, data, sender)
+
+    def _handle_disc_announce(self, data: bytes, sender: tuple):
+        try:
+            parsed = _decode(data)
+        except Exception:
+            return
+        if not isinstance(parsed, dict) or parsed.get("genesis") != self.genesis_hash:
+            return
+        port = parsed.get("port")
+        if not isinstance(port, int) or not (0 < port <= 65535):
+            return
+        host = sender[0]
+        if not _is_lan_source(host) or host in self._local_ips:
+            return
+        # Confirm reachability at the announced port over the ordinary
+        # PING/PONG path -- ping() already admits a private-source PONG to
+        # the pool on sight, so a genuine node on the other end just peers
+        # up from here with no further plumbing needed. Already running off
+        # the recv thread (see _disc_recv_loop's own executor.submit), so
+        # blocking here on ping()'s PONG wait is fine.
+        self.ping(f"{host}:{port}")
 
     def punch_direct(self, target_addr: str):
         """Fire UDP bursts toward target to open our NAT hole.

@@ -278,14 +278,19 @@ def main():
         pool=pool,
     )
     udp.start()
-    log.info("[startup] UDP transport on port %d", args.port)
+    # udp.start() falls back to the next free port if args.port was already
+    # taken on this machine (e.g. a second node instance) -- everything
+    # downstream that needs to know our port uses the port actually bound,
+    # not the one originally requested.
+    port = udp.port
+    log.info("[startup] UDP transport on port %d", port)
 
     # ------------------------------------------------------------------
     # Gossip, Syncer, Discovery, Node
     # ------------------------------------------------------------------
     gossip    = Gossip(pool, udp)
     syncer    = Syncer(pool, udp)
-    discovery = Discovery(udp, pool, genesis["hash"], args.port, pk_hex)
+    discovery = Discovery(udp, pool, genesis["hash"], port, pk_hex)
     node      = Node(args.keyfile, pk, gossip, syncer, pool, net_in_q, db_path=args.db)
 
     def _chain_provider(from_h, to_h):
@@ -310,7 +315,7 @@ def main():
     threading.Thread(target=http_probe.run, args=(pool,), daemon=True).start()
     # Best-effort only: doesn't block startup, and the node works the same
     # whether or not this succeeds (see upnp.py).
-    upnp.try_map_port(args.port)
+    upnp.try_map_port(port)
 
     update_checker = UpdateChecker(
         local_version=LOCAL_VERSION,
@@ -329,19 +334,19 @@ def main():
     # ------------------------------------------------------------------
     # HTTP servers: browser UI only, no peer routes
     # ------------------------------------------------------------------
-    private_port = args.private_port if args.private_port else args.port + 2
+    private_port = args.private_port if args.private_port else port + 2
 
     app = create_app(node, pool, private_port=private_port,
-                     public_port=args.port, update_checker=update_checker,
+                     public_port=port, update_checker=update_checker,
                      rewarder=rewarder)
     threading.Thread(
-        target=lambda: app.run(host=args.host, port=args.port, threaded=True),
+        target=lambda: app.run(host=args.host, port=port, threaded=True),
         daemon=True,
     ).start()
-    log.info("[startup] public API on http://%s:%d", args.host, args.port)
+    log.info("[startup] public API on http://%s:%d", args.host, port)
 
     private_app = create_private_app(node, pool, private_port=private_port,
-                                     public_port=args.port, update_checker=update_checker,
+                                     public_port=port, update_checker=update_checker,
                                      rewarder=rewarder)
     threading.Thread(
         target=lambda: private_app.run(host="127.0.0.1", port=private_port, threaded=True),

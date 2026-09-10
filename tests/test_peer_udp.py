@@ -9,13 +9,15 @@ directly with a hand-built message.
 """
 
 import os
+import socket
 import sys
 import threading
 from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from peer_udp import MT_GETINFO, MT_INFO, MT_PING, MT_PONG, MT_TX, UDPTransport
+from peer_udp import (LAN_DISCOVERY_PORT, MT_GETINFO, MT_INFO, MT_PING, MT_PONG,
+                       MT_TX, UDPTransport, _decode, _encode)
 
 
 def _make_transport(on_tx):
@@ -164,14 +166,122 @@ def test_ping_from_own_private_ip_does_not_self_admit():
     pool.add.assert_not_called()
 
 
-def test_broadcast_discover_sends_ping_to_broadcast_address():
+def test_broadcast_discover_announces_own_port_on_discovery_socket():
+    """The LAN discovery broadcast must carry this node's actual data port
+    (self.port) rather than requiring every node to share one port -- two
+    machines behind the same router commonly use different ports on
+    purpose (a router can only forward one external port to one internal
+    machine), and this is the whole point of a dedicated discovery port."""
     udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
                        on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
     sent = []
-    udp._send_one = lambda msg_type, msg_id, data, target: sent.append((msg_type, data, target))
+    fake_disc_sock = MagicMock()
+    fake_disc_sock.sendto = lambda payload, target: sent.append((payload, target))
+    udp._disc_sock = fake_disc_sock
+
     udp.broadcast_discover()
+
     assert len(sent) == 1
-    msg_type, data, target = sent[0]
-    assert msg_type == MT_PING
-    assert data["genesis"] == udp.genesis_hash
-    assert target == ("255.255.255.255", 9999)
+    payload, target = sent[0]
+    assert target == ("255.255.255.255", LAN_DISCOVERY_PORT)
+    decoded = _decode(payload)
+    assert decoded == {"genesis": udp.genesis_hash, "port": 9999}
+
+
+def test_broadcast_discover_noop_without_discovery_socket():
+    udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
+                       on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
+    udp._disc_sock = None
+    udp.broadcast_discover()  # must not raise
+
+
+def test_disc_announce_from_lan_pings_announced_port():
+    """A discovery announcement from a LAN address must trigger a PING to
+    the *announced* port, not whatever port the announcement itself arrived
+    on -- that's what lets two nodes on different data ports find each
+    other."""
+    udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
+                       on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
+    pinged = []
+    udp.ping = lambda addr: pinged.append(addr)
+    payload = _encode({"genesis": udp.genesis_hash, "port": 8444})
+
+    udp._handle_disc_announce(payload, ("192.168.1.50", 8334))
+
+    assert pinged == ["192.168.1.50:8444"]
+
+
+def test_disc_announce_wrong_genesis_ignored():
+    udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
+                       on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
+    pinged = []
+    udp.ping = lambda addr: pinged.append(addr)
+    payload = _encode({"genesis": "different", "port": 8444})
+
+    udp._handle_disc_announce(payload, ("192.168.1.50", 8334))
+
+    assert pinged == []
+
+
+def test_disc_announce_from_own_ip_ignored():
+    udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
+                       on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
+    udp._local_ips = {"192.168.1.50"}
+    pinged = []
+    udp.ping = lambda addr: pinged.append(addr)
+    payload = _encode({"genesis": udp.genesis_hash, "port": 8444})
+
+    udp._handle_disc_announce(payload, ("192.168.1.50", 8334))
+
+    assert pinged == []
+
+
+def test_disc_announce_from_public_ip_ignored():
+    udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
+                       on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
+    pinged = []
+    udp.ping = lambda addr: pinged.append(addr)
+    payload = _encode({"genesis": udp.genesis_hash, "port": 8444})
+
+    udp._handle_disc_announce(payload, ("8.8.8.8", 8334))
+
+    assert pinged == []
+
+
+def test_disc_announce_bad_port_ignored():
+    udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
+                       on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
+    pinged = []
+    udp.ping = lambda addr: pinged.append(addr)
+    payload = _encode({"genesis": udp.genesis_hash, "port": "not-a-port"})
+
+    udp._handle_disc_announce(payload, ("192.168.1.50", 8334))
+
+    assert pinged == []
+
+
+# ---------------------------------------------------------------------------
+# start() bind-retry: a second node process on the same machine shouldn't
+# just crash because its requested port is already taken.
+# ---------------------------------------------------------------------------
+
+def test_start_falls_back_to_next_free_port_on_collision():
+    # Bind to an ephemeral port for a stable, unused starting point.
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    probe.bind(("0.0.0.0", 0))
+    taken_port = probe.getsockname()[1]
+    probe.close()
+
+    holder = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    holder.bind(("0.0.0.0", taken_port))
+    try:
+        second = UDPTransport(port=taken_port, genesis_hash="a" * 64, on_block=MagicMock(),
+                              on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
+        try:
+            second.start()
+            assert second.port != taken_port
+            assert second.port > taken_port
+        finally:
+            second.stop()
+    finally:
+        holder.close()
