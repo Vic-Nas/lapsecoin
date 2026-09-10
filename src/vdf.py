@@ -42,6 +42,8 @@ Run 3 times and take the median:
   print(f"elapsed {elapsed:.2f}s  VDF_ITERATIONS = {int(120 * N / elapsed)}")
 """
 
+import os
+import tempfile
 import time
 
 import chiavdf
@@ -64,22 +66,83 @@ _IDENTITY = bytes([0x04]) + bytes(FORM_SIZE - 1)
 _GENERATOR = bytes([0x08]) + bytes(FORM_SIZE - 1)
 
 
+class Cancelled(Exception):
+    """Raised by evaluate() when cancel() was called on its handle before
+    chiavdf.prove() returned. chiavdf has no Python-level interrupt for a
+    proof already in flight; the shutdown_file argument is its own
+    mechanism for this (prove() polls for the file's removal and aborts
+    early). We still can't distinguish "aborted early" from "would have
+    returned normally around now" from the return value alone, so a
+    caller that cancelled must not trust whatever prove() returns -- only
+    that it's safe to stop waiting on this call."""
+
+
+class EvaluationHandle:
+    """Lets a caller cancel an in-flight evaluate() from another thread.
+
+    Backed by chiavdf's shutdown_file convention: prove() is created a
+    fresh file to watch, and periodically checks whether it still exists;
+    deleting it is prove()'s own signal to abort early. Verified directly
+    against the installed chiavdf build (not assumed): a 50M-iteration
+    prove() call, deleted-file-triggered, returned in ~1.1s with an
+    incomplete result instead of running to completion. evaluate() never
+    trusts that returned payload when cancelled either way -- it always
+    raises Cancelled off handle._cancelled, not off inspecting the return
+    value, since an aborted call's result isn't a real proof regardless of
+    what bytes happened to come back.
+    """
+
+    def __init__(self):
+        fd, self._path = tempfile.mkstemp(prefix="lapsecoin_vdf_shutdown_")
+        os.close(fd)
+        self._cancelled = False
+
+    @property
+    def path(self):
+        return self._path
+
+    def cancel(self):
+        """Signal chiavdf to abort this evaluation early. Idempotent."""
+        self._cancelled = True
+        try:
+            os.remove(self._path)
+        except FileNotFoundError:
+            pass
+
+    def _cleanup(self):
+        try:
+            os.remove(self._path)
+        except FileNotFoundError:
+            pass
+
+
 def evaluate(challenge: bytes,
-             iterations: int = VDF_ITERATIONS) -> tuple[str, str, float]:
+             iterations: int = VDF_ITERATIONS,
+             handle: "EvaluationHandle | None" = None) -> tuple[str, str, float]:
     """Run the VDF. Blocks for approximately BLOCK_CYCLE_SECONDS.
 
     challenge:  32 bytes from block.vdf_challenge(previous_hash, builder).
     iterations: number of sequential squarings. Pass block.get_vdf_iterations(chain).
+    handle: an EvaluationHandle whose cancel() can be called from another
+        thread to abort this call early (see EvaluationHandle). Optional;
+        omit for the old uncancellable behavior (shutdown_file="").
     Returns (output_hex, proof_hex, elapsed_seconds).
+    Raises Cancelled if handle.cancel() was called before prove() returned.
     """
-    t0     = time.monotonic()
-    result = chiavdf.prove(
-        challenge,
-        _GENERATOR,
-        DISC_SIZE_BITS,
-        iterations,
-        "",
-    )
+    t0 = time.monotonic()
+    try:
+        result = chiavdf.prove(
+            challenge,
+            _GENERATOR,
+            DISC_SIZE_BITS,
+            iterations,
+            handle.path if handle is not None else "",
+        )
+    finally:
+        if handle is not None:
+            handle._cleanup()
+    if handle is not None and handle._cancelled:
+        raise Cancelled()
     elapsed = time.monotonic() - t0
     output  = result[:FORM_SIZE]
     proof   = result[FORM_SIZE:]

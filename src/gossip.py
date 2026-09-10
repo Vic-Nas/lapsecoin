@@ -13,7 +13,11 @@ import tx as tx_mod
 
 log = logging.getLogger("ec.gossip")
 
-SEEN_TX_CACHE_SIZE = 50_000
+SEEN_TX_CACHE_SIZE    = 50_000
+# Blocks are far rarer than txs (one per ~120s vs. potentially many per
+# second), so this can stay small; it only needs to cover the handful of
+# competing candidates that show up around any one height.
+SEEN_BLOCK_CACHE_SIZE = 2_000
 STEM_HOPS_MIN      = 2
 STEM_HOPS_MAX      = 8
 
@@ -31,13 +35,52 @@ class Gossip:
     def __init__(self, pool, udp):
         self.pool     = pool
         self.udp      = udp
-        self._seen_tx = LRUCache(maxsize=SEEN_TX_CACHE_SIZE)
-        self._lock    = threading.Lock()
+        self._seen_tx    = LRUCache(maxsize=SEEN_TX_CACHE_SIZE)
+        self._seen_block = LRUCache(maxsize=SEEN_BLOCK_CACHE_SIZE)
+        self._lock       = threading.Lock()
 
     # ---- Public API (called by Node) ----
 
     def broadcast_block(self, block):
+        """Send a block we built ourselves to every direct peer. Always
+        marks it seen first so relay_block() below won't re-send it back
+        out when/if we also receive it echoed from a peer."""
+        self._mark_block_seen(block)
         self.udp.send_block(block)
+
+    def relay_block(self, block):
+        """Re-broadcast a block we received (and, critically, already
+        validated -- see node.py's inbound-block handling) to our own
+        peers, one hop further than the sender reached.
+
+        Without this, block propagation is capped at whoever happens to
+        be in the original builder's own direct peer list (send_block in
+        peer_udp.py is a single, non-relayed hop). A node outside that
+        list only ever learns about a new tip via its own periodic
+        single-random-peer sync poll, which is slower and coarser than a
+        push would be. Relaying closes that gap the same way Dandelion's
+        fluff phase already does for txs (see dandelion_send below).
+
+        Returns True if this was a new block worth relaying, False if
+        we'd already seen (and so already relayed) it -- callers use this
+        to avoid redundant work like re-triggering downstream logic.
+        """
+        if self._mark_block_seen(block):
+            return False  # already seen; don't re-relay or double-count
+        self.udp.send_block(block)
+        return True
+
+    def _mark_block_seen(self, block):
+        """Mark a block's hash as seen. Returns True if it was already
+        seen (so callers know to skip relaying it again)."""
+        h = block.get("hash")
+        if h is None:
+            return False
+        with self._lock:
+            if h in self._seen_block:
+                return True
+            self._seen_block[h] = True
+            return False
 
     def relay_tx(self, tx_dict):
         """Start a fresh Dandelion relay for a locally-submitted or fluffed tx.

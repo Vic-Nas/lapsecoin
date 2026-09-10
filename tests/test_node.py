@@ -17,7 +17,7 @@ import sys
 import queue
 import threading
 import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -61,6 +61,13 @@ def node_env(tmp_path):
     gossip  = MagicMock()
     gossip.mark_seen.return_value = False
     syncer  = MagicMock()
+    # Real check_and_sync returns True only when it actually adopted a
+    # better chain (syncer.py docstring); a bare MagicMock() call would
+    # otherwise return a truthy Mock by default and make _run_cycle's
+    # mid-wait poll think every tick found a better chain, cancelling the
+    # in-flight VDF for no reason. Tests that want to simulate a real
+    # mid-wait reorg override this explicitly (see TestRunCycleSyncPolling).
+    syncer.check_and_sync.return_value = False
     pool    = MagicMock()
     pool.count.return_value = 3
     net_q   = queue.Queue()
@@ -77,6 +84,12 @@ def node_env(tmp_path):
     )
     node._loop_thread = threading.current_thread()
     node._kek = kek
+    # Real default is 15s (see params.SETTLE_WINDOW_SECONDS_DEFAULT) -- a
+    # deliberate post-finish wait for straggler candidates, not a bug, but
+    # it would make every _run_cycle() test call take 15+ real wall-clock
+    # seconds. Tests that specifically exercise the settle window override
+    # this themselves.
+    node.settle_window_seconds = 0.01
     return node, keyfile, kek, gossip, syncer, pool, net_q
 
 
@@ -827,7 +840,7 @@ class TestRunCycleSyncPolling:
     """
 
     def _slow_fake_evaluate(self, sleep_seconds):
-        def _evaluate(challenge, iterations):
+        def _evaluate(challenge, iterations, handle=None):
             time.sleep(sleep_seconds)
             return "aa" * 100, "bb" * 100, sleep_seconds
         return _evaluate
@@ -925,3 +938,109 @@ class TestRunCycleSyncPolling:
         node._run_cycle()
 
         assert any("elapsed" in s for s in seen)
+
+
+# ---------------------------------------------------------------------------
+# 16. _run_cycle: settle window (abandon own VDF once it can't matter)
+# ---------------------------------------------------------------------------
+
+class TestRunCycleSettleWindow:
+    """A peer's validated candidate for the height we're building arms a
+    short settle timer; once it elapses without our own VDF finishing, we
+    abort our own attempt and resolve the height from whatever candidates
+    we have instead of grinding to completion against a height that's
+    likely already settled elsewhere. Nothing unvalidated may ever reach
+    this path (see _validate_and_relay_candidate's docstring)."""
+
+    def _cancellable_fake_evaluate(self, total_seconds, poll=0.02):
+        """Unlike _slow_fake_evaluate, this one actually honors handle,
+        the same way real chiavdf's shutdown_file polling does -- needed
+        here since these tests assert on the cancel path actually firing
+        promptly, not just on it eventually returning garbage."""
+        def _evaluate(challenge, iterations, handle=None):
+            elapsed = 0.0
+            while elapsed < total_seconds:
+                if handle is not None and handle._cancelled:
+                    raise node_mod.vdf_mod.Cancelled()
+                time.sleep(poll)
+                elapsed += poll
+            return "aa" * 100, "bb" * 100, total_seconds
+        return _evaluate
+
+    def test_peer_candidate_arms_settle_window_and_gets_relayed(
+        self, node_env, monkeypatch
+    ):
+        node, *_, gossip, syncer, pool, net_q = node_env
+        node.settle_window_seconds = 0.05
+        monkeypatch.setattr(node_mod.vdf_mod, "evaluate",
+                            self._cancellable_fake_evaluate(2.0))
+        commit_spy = MagicMock(wraps=node._commit)
+        monkeypatch.setattr(node, "_commit", commit_spy)
+
+        g = node.cs.tip
+        peer_blk = make_block(1, g["hash"], [], builder_index=1, vdf_output="aa")
+        net_q.put({"type": "block", "block": peer_blk})
+
+        node._run_cycle()
+
+        # Relayed because it validated -- see gossip.relay_block. Called
+        # from more than one path here (the pre-loop pass and
+        # _pick_winner's own validation both see it); the real Gossip
+        # dedupes redundant relays via its seen-block cache (see
+        # test_gossip.py), which this mock doesn't replicate, so assert
+        # only that a real relay happened with the right block, not an
+        # exact count.
+        assert call(peer_blk) in gossip.relay_block.call_args_list
+        # Own attempt abandoned; the peer's block is the only entrant, so
+        # it's what gets committed.
+        commit_spy.assert_called_once()
+        winner = commit_spy.call_args.args[0]
+        assert winner["hash"] == peer_blk["hash"]
+        assert commit_spy.call_args.kwargs.get("relay") is True
+
+    def test_own_vdf_finishing_first_still_commits_normally(
+        self, node_env, monkeypatch
+    ):
+        """Sanity check: with no peer candidate ever arriving, a fast own
+        VDF still wins the way it always did -- the settle window just
+        adds its own short (here: tiny) wait afterward before finalizing."""
+        node, *_ = node_env
+        node.settle_window_seconds = 0.01
+        monkeypatch.setattr(node_mod.vdf_mod, "evaluate",
+                            self._cancellable_fake_evaluate(0.05))
+        commit_spy = MagicMock()
+        monkeypatch.setattr(node, "_commit", commit_spy)
+
+        node._run_cycle()
+
+        commit_spy.assert_called_once()
+
+    def test_unvalidated_block_never_arms_settle_window_or_gets_relayed(
+        self, node_env, monkeypatch
+    ):
+        """A garbage/invalid same-height message must never trigger relay
+        or the settle timer -- see _validate_and_relay_candidate's
+        docstring on why (a free griefing vector otherwise: crafting a
+        fake block costs nothing, but aborting a real in-flight VDF does
+        not). Own VDF should finish and win normally, undisturbed."""
+        node, *_, gossip, syncer, pool, net_q = node_env
+        node.settle_window_seconds = 0.05
+        monkeypatch.setattr(node_mod.vdf_mod, "evaluate",
+                            self._cancellable_fake_evaluate(0.15))
+        commit_spy = MagicMock(wraps=node._commit)
+        monkeypatch.setattr(node, "_commit", commit_spy)
+
+        g = node.cs.tip
+        garbage = make_block(1, g["hash"], [], builder_index=1, vdf_output="aa")
+        # An out-of-range height fails _validate_and_relay_candidate's
+        # height check unconditionally, regardless of what the autouse
+        # vdf.verify mock would otherwise let through.
+        garbage["height"] = 999
+        net_q.put({"type": "block", "block": garbage})
+
+        node._run_cycle()
+
+        gossip.relay_block.assert_not_called()
+        commit_spy.assert_called_once()
+        winner = commit_spy.call_args.args[0]
+        assert winner.get("builder") == node.addr  # own candidate won, not the garbage

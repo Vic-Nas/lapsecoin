@@ -900,6 +900,34 @@ def create_private_app(node, pool, private_port=8335, public_port=8333,
         ctx["pending"] = status["pending"]
         return render_template("rewards.html", **ctx)
 
+    @app.route("/settings", methods=["GET", "POST"])
+    def settings():
+        info = node.get_info()
+        ctx = dict(title="Settings", csrf_token=csrf_token,
+                   alert_ok="", alert_err="",
+                   settle_window_seconds=info["settle_window_seconds"],
+                   candidate_gap_stats=info["candidate_gap_stats"])
+
+        if request.method == "POST":
+            if not secrets.compare_digest(request.form.get("csrf_token", ""), csrf_token):
+                ctx["alert_err"] = "Session expired; reload the page and try again."
+            else:
+                raw = request.form.get("settle_window_seconds", "").strip()
+                try:
+                    seconds = float(raw)
+                    if seconds < 0:
+                        raise ValueError
+                    ok, err = node.set_settle_window_seconds_from_api(seconds)
+                    if ok:
+                        ctx["alert_ok"] = "Settings saved."
+                        ctx["settle_window_seconds"] = seconds
+                    else:
+                        ctx["alert_err"] = err or "Failed to save."
+                except ValueError:
+                    ctx["alert_err"] = "Settle window must be a non-negative number of seconds."
+
+        return render_template("settings.html", **ctx)
+
     @app.route("/send", methods=["GET", "POST"])
     def send():
         v = node.view

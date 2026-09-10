@@ -30,7 +30,7 @@ import mempool as mempool_mod
 import tx as tx_mod
 import vdf as vdf_mod
 from chainstate import ChainState
-from params import DB_PATH
+from params import DB_PATH, SETTLE_WINDOW_SECONDS_DEFAULT
 from storage import Storage
 
 log = logging.getLogger("ec.node")
@@ -167,6 +167,18 @@ class Node:
         self._own_build_seconds = collections.deque(maxlen=30)
         self._load_own_build_seconds()
 
+        # Local settle-window policy (see params.SETTLE_WINDOW_SECONDS_DEFAULT
+        # and _run_cycle's wait loop). Per-node, adjustable from the private
+        # settings page; persisted so it survives restarts.
+        self.settle_window_seconds = self._load_settle_window_seconds()
+
+        # Recent (gap_seconds) samples between the first and each later
+        # valid candidate this node has seen for the same height -- real
+        # data for calibrating a better settle-window default over time,
+        # instead of guessing one. Not consensus, not persisted mid-session
+        # critical; best-effort like _own_build_seconds.
+        self._candidate_gap_seconds = collections.deque(maxlen=200)
+
         self.cs   = self._load_cs()
         self.view = NodeView(self.cs)
 
@@ -197,6 +209,38 @@ class Node:
     def _save_own_build_seconds(self):
         self.storage.set_meta(self._OWN_BUILD_SECONDS_META_KEY,
                               json.dumps(list(self._own_build_seconds)))
+
+    _SETTLE_WINDOW_META_KEY = "settle_window_seconds"
+
+    def _load_settle_window_seconds(self):
+        raw = self.storage.get_meta(self._SETTLE_WINDOW_META_KEY)
+        if raw is None:
+            return SETTLE_WINDOW_SECONDS_DEFAULT
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            log.warning("[startup] discarding unreadable settle_window_seconds meta")
+            return SETTLE_WINDOW_SECONDS_DEFAULT
+        if v < 0:
+            return SETTLE_WINDOW_SECONDS_DEFAULT
+        return v
+
+    def _set_settle_window_seconds(self, seconds):
+        """Node loop thread only -- see submit_tx for the same enqueue
+        pattern Flask threads use to reach this safely."""
+        assert threading.current_thread() is self._loop_thread
+        seconds = max(0.0, float(seconds))
+        self.settle_window_seconds = seconds
+        self.storage.set_meta(self._SETTLE_WINDOW_META_KEY, str(seconds))
+
+    def set_settle_window_seconds_from_api(self, seconds, timeout=5):
+        """Thread-safe bridge for the private settings page (api.py)."""
+        reply = queue.Queue(maxsize=1)
+        self.net_in_q.put({"type": "set_settle_window", "seconds": seconds, "reply": reply})
+        try:
+            return reply.get(timeout=timeout)
+        except queue.Empty:
+            return False, "node busy (timeout)"
 
     def _load_cs(self):
         """Load or create ChainState from storage."""
@@ -257,6 +301,22 @@ class Node:
             return None
         return own_median / stats["median"]
 
+    def observed_candidate_gap_stats(self):
+        """Real (not guessed) measurements of how far apart, in seconds,
+        this node has actually seen the first and later valid candidates
+        land for the same height -- the quantity a settle window should
+        actually be sized from (see _candidate_gap_seconds's docstring).
+        None until at least a few samples exist."""
+        if len(self._candidate_gap_seconds) < 3:
+            return None
+        samples = sorted(self._candidate_gap_seconds)
+        return {
+            "count":  len(samples),
+            "median": statistics.median(samples),
+            "p95":    samples[max(0, int(len(samples) * 0.95) - 1)],
+            "max":    samples[-1],
+        }
+
     def get_info(self):
         v = self.view
         return {
@@ -271,6 +331,8 @@ class Node:
             "block_reward": v.state.compute_block_reward(),
             "block_time_ratio": self.own_block_time_ratio(),
             "status":       self.status_line,
+            "settle_window_seconds": self.settle_window_seconds,
+            "candidate_gap_stats":   self.observed_candidate_gap_stats(),
         }
 
     def start(self, kek):
@@ -388,7 +450,13 @@ class Node:
 
     def _run_cycle(self):
         self._cycle_count += 1
-        self._drain_queue()
+        # Captured, not discarded: a peer's candidate for the height we're
+        # about to build can legitimately arrive in this brief window too
+        # (right at cycle start, before the wait loop below even begins),
+        # and dropping it here would silently skip both relaying it and
+        # arming the settle window for it -- see _consider_inbound_block,
+        # called on these again once `cs` is known below.
+        pre_cycle_blocks = self._drain_queue()
         self._retry_stuck_local_txs()
 
         if self._cycle_count % SYNC_EVERY_N_CYCLES == 0:
@@ -405,22 +473,61 @@ class Node:
 
         # Run VDF in a background thread so the node loop stays responsive
         # to tx submissions and peer messages during the ~120s evaluation.
+        # `handle` lets us abort it early -- see the settle-window logic
+        # below and vdf.EvaluationHandle's docstring.
         import concurrent.futures as _cf
         accumulated_blocks = []
         iterations = block_mod.get_vdf_iterations(cs.chain)
         vdf_start = time.monotonic()
+        handle = vdf_mod.EvaluationHandle()
+
+        # Settle-window state. Armed the moment EITHER our own VDF finishes
+        # OR we've validated a peer's candidate for this same height,
+        # whichever comes first -- see node.settle_window_seconds. Only a
+        # block that has already passed full block_mod.validate() is
+        # allowed anywhere near this: an unvalidated message triggering an
+        # irreversible abort of real, costly work would be a free griefing
+        # vector (craft a fake "block" message, no VDF required, and every
+        # node that trusted it discards real work for nothing).
+        settle_deadline = None
+        own_finished_early = False  # True once _fut completes, before we've broken out of the loop
+
+        # Process anything that arrived in the drain at the very top of
+        # this cycle (before `cs` was even known) through the same path
+        # the wait loop below uses -- see pre_cycle_blocks's comment.
+        for blk in pre_cycle_blocks:
+            settle_deadline = self._consider_inbound_block(
+                blk, cs, accumulated_blocks, settle_deadline)
+
         with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
             _fut = _pool.submit(
                 vdf_mod.evaluate,
-                block_mod.vdf_challenge(cs.tip["hash"], self.addr), iterations)
+                block_mod.vdf_challenge(cs.tip["hash"], self.addr), iterations, handle)
             last_sync_check = time.monotonic()
             last_heartbeat  = vdf_start
-            while not _fut.done():
-                accumulated_blocks += self._drain_queue(timeout=1)
+            while True:
                 now = time.monotonic()
-                # The VDF itself gives no progress callback, so without this
-                # the log (and GUI status line) would otherwise go quiet for
-                # the whole multi-minute wait -- indistinguishable from hung.
+                if _fut.done():
+                    own_finished_early = True
+                    if settle_deadline is None:
+                        settle_deadline = now + self.settle_window_seconds
+                elif settle_deadline is not None and now >= settle_deadline:
+                    # Never finished in time; give up on this cycle's own
+                    # candidate rather than let it run to completion against
+                    # a height that's already settled elsewhere -- every
+                    # second spent finishing it now is a second not spent
+                    # starting the next (still fully live) height.
+                    handle.cancel()
+                    break
+                if own_finished_early and (settle_deadline is None or now >= settle_deadline):
+                    break
+
+                new_blocks = self._drain_queue(timeout=1)
+                for blk in new_blocks:
+                    settle_deadline = self._consider_inbound_block(
+                        blk, cs, accumulated_blocks, settle_deadline)
+
+                now = time.monotonic()
                 if now - last_heartbeat >= VDF_HEARTBEAT_INTERVAL_SECONDS:
                     elapsed = now - vdf_start
                     log.info("[vdf] still computing  height=%d  elapsed=%.0fs",
@@ -434,29 +541,63 @@ class Node:
                 # attempt. Still runs on this same thread -- see
                 # SYNC_POLL_INTERVAL_SECONDS's comment for why that matters.
                 if now - last_sync_check >= SYNC_POLL_INTERVAL_SECONDS:
-                    self.syncer.check_and_sync(
+                    if self.syncer.check_and_sync(
                         self.cs.chain,
                         lambda chain: self.apply_better_chain(chain)[0],
                         info_timeout=SYNC_POLL_INFO_TIMEOUT_SECONDS,
-                    )
+                    ):
+                        # A strictly longer chain was just adopted -- this
+                        # cycle's candidate is provably dead already (see
+                        # the self.cs-is-not-cs check below), no reason to
+                        # let the VDF keep running to find that out later.
+                        handle.cancel()
                     last_sync_check = now
-            vdf_out, vdf_proof, vdf_seconds = _fut.result()
-        log.info("[vdf] proof ready  height=%d  seconds=%.1f  iterations=%d",
-                 cs.height + 1, vdf_seconds, iterations)
-        self._own_build_seconds.append(vdf_seconds)
-        self._save_own_build_seconds()
+
+            own_cancelled = handle._cancelled
+            if not own_cancelled:
+                try:
+                    vdf_out, vdf_proof, vdf_seconds = _fut.result()
+                except vdf_mod.Cancelled:
+                    own_cancelled = True
+            if own_cancelled and not _fut.done():
+                # cancel() was called (sync adopted a better chain, or the
+                # settle window fired) but the underlying prove() call
+                # hasn't unwound yet -- block until it does; chiavdf has no
+                # async cancel, only "stop at the next poll of the shutdown
+                # file", so this wait is normally short but not zero.
+                try:
+                    _fut.result()
+                except vdf_mod.Cancelled:
+                    pass
+
+        if own_cancelled:
+            log.info("[vdf] own candidate abandoned for height=%d "
+                     "(settle window elapsed or tip changed before finishing)",
+                     cs.height + 1)
+        else:
+            log.info("[vdf] proof ready  height=%d  seconds=%.1f  iterations=%d",
+                     cs.height + 1, vdf_seconds, iterations)
+            self._own_build_seconds.append(vdf_seconds)
+            self._save_own_build_seconds()
 
         if self.cs is not cs:
             # A mid-wait sync check adopted a better chain out from under us.
-            # The VDF we just computed was for cs.tip, which is no longer our
-            # tip -- apply_block() trusts previous_hash without re-checking
-            # it, so committing this candidate would silently splice a block
-            # onto the wrong parent. Discard it; the next cycle starts fresh
-            # against the new tip. The sunk VDF time isn't recoverable (the
-            # computation itself can't be cancelled or reused), same as any
-            # other lost fork race.
+            # The VDF we just computed (or abandoned) was for cs.tip, which
+            # is no longer our tip -- apply_block() trusts previous_hash
+            # without re-checking it, so committing this candidate would
+            # silently splice a block onto the wrong parent. Discard it; the
+            # next cycle starts fresh against the new tip.
             log.info("[vdf] tip changed during VDF computation (adopted a "
                      "better chain mid-cycle); discarding in-flight candidate")
+            return
+
+        if own_cancelled:
+            # We never got a candidate of our own this cycle. Resolve the
+            # height from whatever valid peer candidates arrived instead.
+            winner, relay = self._pick_winner(cs, None, accumulated_blocks)
+            if winner is None:
+                return
+            self._commit(winner, relay=relay)
             return
 
         candidate = block_mod.assemble(cs.tip, self.mempool.all_txs(), self.addr, iterations)
@@ -481,12 +622,65 @@ class Node:
             return
         self._commit(winner, relay=relay)
 
+    def _consider_inbound_block(self, blk, cs, accumulated_blocks, settle_deadline):
+        """Record an inbound block for later _pick_winner consideration,
+        and if it validates as a real candidate for cs.height+1, relay it
+        and arm (or record a gap sample against) the settle window.
+        Returns the possibly-newly-armed settle_deadline; callers reassign
+        their local variable from it (kept a return value, not mutated
+        state, so this has one obvious call site per block regardless of
+        whether that block showed up before the wait loop started or
+        during it)."""
+        accumulated_blocks.append(blk)
+        if not self._validate_and_relay_candidate(blk, cs):
+            return settle_deadline
+        arrived_at = time.monotonic()
+        if settle_deadline is None:
+            settle_deadline = arrived_at + self.settle_window_seconds
+            log.info("[vdf] valid peer candidate for height=%d seen; "
+                     "settle window armed (%.1fs)",
+                     cs.height + 1, self.settle_window_seconds)
+        else:
+            first_candidate_at = settle_deadline - self.settle_window_seconds
+            self._candidate_gap_seconds.append(arrived_at - first_candidate_at)
+        return settle_deadline
+
+    def _validate_and_relay_candidate(self, blk, cs):
+        """True if blk is a fully validated candidate for cs.height+1
+        extending cs.tip. As a side effect, relays it to this node's own
+        peers (gossip.relay_block) so propagation isn't capped at whoever
+        the original builder happened to be directly peered with (see
+        relay_block's docstring in gossip.py).
+
+        Nothing here may be skipped or reordered: this is the one gate
+        standing between an attacker-crafted, zero-cost "block" message
+        and two things that are otherwise real and costly -- relaying
+        network bandwidth on everyone's behalf, and (via the settle-window
+        state this return value feeds in _run_cycle) aborting a node's own
+        in-flight VDF. A block that hasn't cleared real block_mod.validate()
+        must never be allowed to influence either.
+        """
+        if blk.get("height") != cs.height + 1:
+            return False
+        if blk.get("previous_hash") != cs.tip["hash"]:
+            return False
+        ok, err = block_mod.validate(blk, cs.state.snapshot(), cs.chain)
+        if not ok:
+            log.debug("[vdf] rejected inbound candidate: %s", err)
+            return False
+        self.gossip.relay_block(blk)
+        return True
+
     def _pick_winner(self, cs, candidate, peer_blocks):
         """Return (best_block, relay). relay=True means it came from a peer.
-        Returns (None, False) if the candidate is stale (tip changed under sync).
+        Returns (None, False) if there's no viable winner (candidate stale,
+        or candidate is None and no peer block validated either -- this
+        cycle contributes nothing, which is fine, the next one starts fresh).
 
         cs: the ChainState candidate was built against; passed explicitly so
         this method is immune to self.cs advancing during the drain window.
+        candidate: this node's own finished block, or None if it abandoned
+        its own attempt this cycle (settle window elapsed before finishing).
         """
         tip = cs.tip
 
@@ -504,20 +698,32 @@ class Node:
             log.debug("[vdf] peer block accepted  height=%d  hash=%s  builder=%s  tx=%d",
                       blk["height"], blk["hash"][:12],
                       (blk.get("builder") or "")[:24], len(blk.get("transactions", [])))
+            # Relay dedups via gossip's seen-block cache, so this is a cheap
+            # no-op for anything already relayed earlier in the wait loop
+            # (_validate_and_relay_candidate) -- kept here too so every
+            # code path that validates a peer block also relays it, not
+            # just the mid-wait one.
+            self.gossip.relay_block(blk)
             valid_peers.append(blk)
 
-        if candidate.get("previous_hash") != tip["hash"]:
+        if candidate is not None and candidate.get("previous_hash") != tip["hash"]:
             log.warning("[vdf] candidate stale (tip advanced during drain), skipping cycle")
+            candidate = None
+
+        entrants = ([candidate] if candidate is not None else []) + valid_peers
+        if not entrants:
+            log.info("[vdf] no viable candidate this cycle (own abandoned, "
+                     "no valid peer blocks either)")
             return None, False
 
         # Among all equally-valid same-height candidates (all proving the
         # same required iterations), the lowest vdf_output wins -- the same
         # rule ChainState.is_better_than uses, so a node's own immediate
         # pick can't diverge from what syncer would settle on anyway.
-        winner   = min([candidate] + valid_peers, key=block_mod.tie_break_key)
+        winner   = min(entrants, key=block_mod.tie_break_key)
         is_peer  = winner is not candidate
         log.info("[vdf] winner  hash=%s  peer=%s  candidates=%d  peer_candidates=%d",
-                 winner["hash"][:12], is_peer, len(valid_peers) + 1, len(valid_peers))
+                 winner["hash"][:12], is_peer, len(entrants), len(valid_peers))
         return winner, is_peer
 
     def _commit(self, blk, relay=False):
@@ -572,6 +778,12 @@ class Node:
             msg["reply"].put(self.submit_tx(msg["tx"]))
         elif t == "tx":
             self._handle_inbound_tx(msg)
+        elif t == "set_settle_window":
+            try:
+                self._set_settle_window_seconds(msg["seconds"])
+                msg["reply"].put((True, None))
+            except (TypeError, ValueError) as e:
+                msg["reply"].put((False, str(e)))
 
     def _handle_inbound_tx(self, msg):
         """Route an inbound tx message.

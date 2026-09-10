@@ -174,3 +174,39 @@ class TestBroadcastBlock:
         block = {"height": 1, "hash": "aa" * 32}
         g.broadcast_block(block)
         udp.send_block.assert_called_once_with(block)
+
+
+# ---------------------------------------------------------------------------
+# 5. relay_block
+# ---------------------------------------------------------------------------
+
+class TestRelayBlock:
+    def test_first_relay_sends_and_returns_true(self):
+        g, _, udp = make_gossip(peers=["1.2.3.4:9000"])
+        block = {"height": 1, "hash": "aa" * 32}
+        assert g.relay_block(block) is True
+        udp.send_block.assert_called_once_with(block)
+
+    def test_second_relay_of_same_block_does_not_resend(self):
+        g, _, udp = make_gossip(peers=["1.2.3.4:9000"])
+        block = {"height": 1, "hash": "aa" * 32}
+        g.relay_block(block)
+        assert g.relay_block(block) is False
+        udp.send_block.assert_called_once_with(block)
+
+    def test_different_blocks_both_relayed(self):
+        g, _, udp = make_gossip(peers=["1.2.3.4:9000"])
+        b1 = {"height": 1, "hash": "aa" * 32}
+        b2 = {"height": 2, "hash": "bb" * 32}
+        assert g.relay_block(b1) is True
+        assert g.relay_block(b2) is True
+        assert udp.send_block.call_count == 2
+
+    def test_broadcast_then_relay_of_own_block_does_not_resend(self):
+        """A node's own block, once broadcast, shouldn't be re-sent if it
+        comes back around (e.g. echoed by a peer) and reaches relay_block."""
+        g, _, udp = make_gossip(peers=["1.2.3.4:9000"])
+        block = {"height": 1, "hash": "aa" * 32}
+        g.broadcast_block(block)
+        assert g.relay_block(block) is False
+        udp.send_block.assert_called_once_with(block)
