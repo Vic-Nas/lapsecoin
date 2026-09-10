@@ -68,9 +68,14 @@ class PeerPool:
 
     # ---- Core operations ----
 
-    def add(self, addr):
-        """Add a peer. Returns True if it was new."""
-        if not is_routable_peer_addr(addr):
+    def add(self, addr, allow_private=False):
+        """Add a peer. Returns True if it was new.
+
+        allow_private bypasses the private/loopback/link-local rejection --
+        only for addresses a local operator entered deliberately (the
+        private dashboard's manual add-peer form), never for anything
+        sourced from the DHT, peer-exchange, or another peer."""
+        if not allow_private and not is_routable_peer_addr(addr):
             return False
         now_mono = time.monotonic()
         with self._lock:

@@ -78,6 +78,7 @@ Exchange / third-party integration:
 import logging
 import os
 import secrets
+import socket
 import sys
 
 import markdown
@@ -594,6 +595,18 @@ def _shared_read_only_routes(app, node, pool, limiter,
         return render_template("whitepaper.html", title="Whitepaper",
                                rendered=rendered)
 
+    def _local_lan_ip():
+        """Best-effort LAN IP for this machine, for showing peers on the
+        same local network what to type into each other's add-peer form.
+        No packet is actually sent -- UDP connect() just picks the local
+        interface/route the OS would use for that destination."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                return s.getsockname()[0]
+        except OSError:
+            return None
+
     def _self_external_addr():
         # node.gossip (and its .udp) may not exist on every node object this
         # is called with -- e.g. lightweight test doubles -- and plain
@@ -625,12 +638,14 @@ def _shared_read_only_routes(app, node, pool, limiter,
         start = (page - 1) * PEERS_PER_PAGE
         end   = start + PEERS_PER_PAGE
         self_height = node.view.chain[-1].get("height", 0)
+        lan_ip = _local_lan_ip() if is_private else None
         return render_template("peers.html", title="Peers", rows=all_rows[start:end],
                                peer_count=len(all_rows), page=page, total_pages=total_pages,
                                page_window=_pagination_window(page, total_pages),
                                has_prev=page > 1, has_next=end < len(all_rows),
                                self_height=self_height, self_wallet=node.addr,
-                               self_version=LOCAL_VERSION, self_addr=_self_external_addr())
+                               self_version=LOCAL_VERSION, self_addr=_self_external_addr(),
+                               lan_addr=f"{lan_ip}:{public_port}" if lan_ip else None)
 
     @app.route("/odds", endpoint=pfx+"odds")
     def odds():
@@ -909,7 +924,7 @@ def create_private_app(node, pool, private_port=8335, public_port=8333,
         port = data.get("port") if data else None
         if (isinstance(host, str) and host
                 and isinstance(port, int) and 0 < port <= 65535):
-            pool.add(f"{host}:{port}")
+            pool.add(f"{host}:{port}", allow_private=True)
             return jsonify({"ok": True})
         return jsonify({"ok": False, "error": "need valid host and port"}), 400
 

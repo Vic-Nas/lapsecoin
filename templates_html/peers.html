@@ -1,6 +1,24 @@
 {% extends "base.html" %}
 {% block content %}
 <h2>Peers</h2>
+{% if is_private %}
+<div class="card">
+  <div class="card-title">Add a peer manually</div>
+  {% if lan_addr %}
+  <div style="color:var(--muted);font-size:.85rem;margin-bottom:.5rem">
+    This machine's local network address is <span class="hash-short" style="display:inline">{{ lan_addr }}</span>.
+    Two machines on the same network (e.g. behind the same router) usually can't reach each other
+    through their shared public IP -- add each other using this local address instead.
+  </div>
+  {% endif %}
+  <form id="add-peer-form" style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center">
+    <input type="text" id="add-peer-host" placeholder="Host or IP" required style="flex:1;min-width:10rem">
+    <input type="number" id="add-peer-port" placeholder="Port" min="1" max="65535" value="8333" required style="width:6rem">
+    <button type="submit" class="btn-sm">Add peer</button>
+  </form>
+  <div id="add-peer-msg" style="font-size:.85rem;margin-top:.4rem"></div>
+</div>
+{% endif %}
 <div class="card">
   <div class="card-title" style="display:flex;justify-content:space-between;align-items:baseline;gap:.75rem">
     <span id="peers-count">{{ peer_count }} known peer{{ "s" if peer_count != 1 }}</span>
@@ -205,6 +223,36 @@
 
   refresh();
   setInterval(refresh, 8000);
+
+  const addForm = document.getElementById("add-peer-form");
+  if (addForm) {
+    addForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const host = document.getElementById("add-peer-host").value.trim();
+      const port = parseInt(document.getElementById("add-peer-port").value, 10);
+      const msg = document.getElementById("add-peer-msg");
+      msg.textContent = "";
+      try {
+        const res = await fetch("/api/peers/add", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({host, port}),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          msg.textContent = "Added.";
+          msg.style.color = "var(--green)";
+          refresh();
+        } else {
+          msg.textContent = data.error || "Failed to add peer.";
+          msg.style.color = "var(--red)";
+        }
+      } catch (err) {
+        msg.textContent = "Request failed.";
+        msg.style.color = "var(--red)";
+      }
+    });
+  }
 })();
 </script>
 {% endblock %}
