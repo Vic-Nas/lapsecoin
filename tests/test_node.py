@@ -1408,65 +1408,43 @@ class TestDraw:
         assert node._should_abandon(
             node.cs, [object()], time.monotonic() - 150.0) is True
 
-    def test_window_is_the_configured_floor_until_it_has_measured(self, node_env):
-        """A node that has seen no contested height has nothing to go on,
-        and guessing from no samples is worse than the operator's number."""
-        node, *_ = node_env
+    def test_the_window_is_exactly_what_was_configured(self, node_env):
+        """One number, the operator's. It used to widen itself from the gap
+        between a height's first candidate and each later one, which is not
+        propagation but how far apart the builders are in speed, so a node
+        with a real lead had the window stretch to cover that lead and turn
+        it into a coin flip."""
         import settings as settings_mod
+        node, *_ = node_env
+
         assert node._draw_window_seconds() == node.settings.get(
             settings_mod.DRAW_WINDOW_SECONDS)
 
-    def test_measurement_can_only_lengthen_the_window(self, node_env):
-        """A measurement can say the network is slower than the operator
-        assumed. It must never say it is safe to be stricter than they
-        chose, which would silently drop competitors they wanted included."""
-        node, *_ = node_env
+    def test_changing_the_setting_changes_the_window(self, node_env, monkeypatch):
         import settings as settings_mod
-        floor = node.settings.get(settings_mod.DRAW_WINDOW_SECONDS)
-        node._draw_gaps.extend([0.05] * 10)      # a very fast network
-
-        assert node._draw_window_seconds() == floor
-
-    def test_a_slow_network_widens_the_window(self, node_env):
         node, *_ = node_env
+        monkeypatch.setenv("LAPSECOIN_DRAW_WINDOW_SECONDS", "4")
+
+        assert node._draw_window_seconds() == 4.0
+        node.open_draw(1)
+        assert node._draw_closes - node._draw_anchor == 4.0
+
+    def test_a_slower_field_does_not_stretch_it(self, node_env):
+        """The case that motivated removing the widening: competitors
+        arriving late must not buy themselves a wider window, or the draw
+        grows to absorb exactly the speed differences it exists to settle."""
         import settings as settings_mod
-        floor = node.settings.get(settings_mod.DRAW_WINDOW_SECONDS)
-        node._draw_gaps.extend([6.0] * 10)       # median 6s of arrival spread
-
-        widened = node._draw_window_seconds()
-        assert widened > floor
-        assert widened == 6.0 * node_mod.DRAW_WINDOW_TAIL_FACTOR
-
-    def test_the_widening_is_capped(self, node_env):
-        """Inflating the median costs a real VDF per height, but it must
-        still be bounded however many an attacker is willing to spend."""
         node, *_ = node_env
-        import settings as settings_mod
-        floor = node.settings.get(settings_mod.DRAW_WINDOW_SECONDS)
-        node._draw_gaps.extend([10_000.0] * 10)
-
-        assert node._draw_window_seconds() == floor * node_mod.DRAW_WINDOW_MAX_MULTIPLE
-
-    def test_the_first_candidate_of_a_height_records_no_gap(self, node_env):
-        """It is the anchor: there is nothing for it to be late against."""
-        node, *_ = node_env
+        configured = node.settings.get(settings_mod.DRAW_WINDOW_SECONDS)
         g = node.cs.tip
-        first = make_block(1, g["hash"], [], builder_index=0, vdf_output="mm")
 
-        node._consider_inbound_block(first, node.cs, [])
-        assert list(node._draw_gaps) == []
+        for i in range(6):
+            node._consider_inbound_block(
+                make_block(1, g["hash"], [], builder_index=i,
+                           vdf_output=f"{i:02x}" * 100),
+                node.cs, [])
 
-    def test_a_later_sibling_records_how_late_it_was(self, node_env):
-        node, *_ = node_env
-        g = node.cs.tip
-        first  = make_block(1, g["hash"], [], builder_index=0, vdf_output="mm")
-        second = make_block(1, g["hash"], [], builder_index=1, vdf_output="nn")
-
-        node._consider_inbound_block(first, node.cs, [])
-        node._consider_inbound_block(second, node.cs, [])
-
-        assert len(node._draw_gaps) == 1
-        assert node._draw_gaps[0] > 0
+        assert node._draw_window_seconds() == configured
 
     def test_a_new_contest_at_a_height_we_held_before_gets_a_window(self, node_env):
         """Nothing resets _draw_height when a window expires, so a height

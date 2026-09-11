@@ -87,23 +87,33 @@ ADVERTISED_ADDRESS = Setting(
 # raw link latency either, since a block walks a stem of ~10 expected
 # hops (gossip.STEM_CONTINUE_PROB) before it floods at all.
 #
-# The ceiling is cheaper: a reorg inside the window throws away at most
-# that much of our own next-height work, and only on a contested height.
-# Erring long wastes some work; erring short quietly breaks the rule the
-# draw is for. So when unsure, too long beats too short.
+# The ceiling is not free either, and it is the side that is easy to get
+# wrong. Every second above propagation is a second of real speed
+# advantage converted into a coin flip: a builder ten seconds faster than
+# the field wins outright under a five-second window and ties under a
+# fifteen-second one, having done nothing differently. Measured
+# propagation is around half a second for an ordinary block, so a setting
+# in the low seconds already clears the floor several times over, and the
+# rest is a choice about how much of a lead should count.
 #
-# Left a setting rather than a constant because the right floor depends
-# on the network a node is actually on. Worth knowing that unlike most
-# settings here, this one is not purely local in effect: nodes running
-# very different windows admit different sets of entrants to the same
-# draw, and disagree more often as a result.
+# This node does not widen it from measurement, and deliberately so after
+# trying. What was measured was the gap between a height's first candidate
+# and each later one, which is not propagation but how far apart the
+# builders are in speed, so the window grew to cover exactly the
+# differences the draw exists to settle and erased the lead it was meant
+# to adjudicate. One number, set here.
+#
+# Worth knowing that unlike most settings here, this one is not purely
+# local in effect: nodes running very different windows admit different
+# sets of entrants to the same draw, and disagree more often as a result.
 DRAW_WINDOW_SECONDS = Setting(
     "draw_window_seconds", 10.0, float, minimum=0.0,
-    label="Minimum draw window (seconds)",
-    help="Shortest time a height keeps accepting a better same-height "
-         "block. Widened automatically when blocks are measured to be "
-         "arriving slower than this. Not a wait, work on the next height "
-         "continues throughout.",
+    label="Draw window (seconds)",
+    help="How long a height keeps accepting a better same-height block. "
+         "Anything finishing inside it is treated as a tie and decided on "
+         "proof rather than speed, so this is also how much of a speed "
+         "advantage it takes to win outright. Not a wait, work on the next "
+         "height continues throughout.",
 )
 
 # ADVERTISED_ADDRESS is deliberately not in ALL: it's an env-only escape
