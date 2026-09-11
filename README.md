@@ -31,7 +31,9 @@ You'll be prompted for a signing passphrase, then the wallet is at `http://local
 <details>
 <summary>How consensus works</summary>
 
-Most cumulative proven work wins, first valid block received: Bitcoin-style consensus. Block timing is enforced by a VDF anchored to real elapsed time, believed to have a much smaller hardware-advantage gap than proof-of-work. Transactions are ordinary and plaintext, with sender-bid fees, much like Bitcoin's own. Signatures are FALCON-512 (quantum-resistant). Full spec in [docs/whitepaper.md](docs/whitepaper.md).
+Most cumulative proven work wins, Bitcoin-style. Where two chains carry the same work, which is what a plain same-height fork is, the tie goes to the lower VDF output rather than to whichever block arrived first, so a height is decided by the evaluation each builder actually paid for and not by who is best connected. A height keeps accepting a better same-height block for a short window (`LAPSECOIN_DRAW_WINDOW_SECONDS`) to give that comparison time to happen; work on the next height continues throughout, so it is not a pause.
+
+Block timing is enforced by a VDF anchored to real elapsed time, believed to have a much smaller hardware-advantage gap than proof-of-work. Transactions are ordinary and plaintext, with sender-bid fees, much like Bitcoin's own. Signatures are FALCON-512 (quantum-resistant). Full spec in [docs/whitepaper.md](docs/whitepaper.md).
 </details>
 
 <details>
@@ -58,11 +60,27 @@ Produces a self-contained binary in `dist/`. Requires cmake, ninja, and a C comp
 </details>
 
 <details>
+<summary>Updating, and when it isn't optional</summary>
+
+Nodes agree on a wire format, and a node too old to speak the current one is refused in the handshake rather than half-supported: it won't peer, so it won't receive blocks, and it will quietly mine a chain nobody else sees. That is deliberate, since carrying every old format forever is how a codebase and a protocol both rot, but it means some updates are mandatory rather than nice to have.
+
+The version number says which is which, and the node tells you in the update notice:
+
+| Change | Example | What it means |
+|---|---|---|
+| Third number | `0.6.0` to `0.6.1` | Fixes and improvements. Update when convenient |
+| Second number | `0.5.1` to `0.6.0` | **Update required.** The wire format changed; older nodes are dropped |
+| First number | `0.x` to `1.x` | A consensus break. Update required, and expect a resync |
+
+If your node suddenly sits alone with no peers after others have updated, check your version first.
+</details>
+
+<details>
 <summary>Ports and passphrase</summary>
 
 | | Port | Interface | Purpose |
 |---|---|---|---|
-| Public | `8333` (`--port`) | `0.0.0.0` | Node UI + peer API. Safe to expose. Send disabled. |
+| Public | `8333` (`--port`) | `0.0.0.0` | Peer traffic (UDP) and the read-only node UI and JSON API (TCP), on the same port number. Safe to expose. Send disabled. |
 | Private | `port+2` (`--private-port`) | `127.0.0.1` | Wallet UI. **Never expose.** Full access, including Send. |
 
 `port+3` is reserved for the DHT subsystem (libtorrent). Port `18334` is fixed and reserved across every node for same-network peer discovery (broadcast-based, finds other LapseCoin nodes on your LAN automatically regardless of their own port). Don't bind other services to either.
@@ -112,7 +130,11 @@ Node-local settings live on the private wallet UI under **Settings**, and each c
 | `--db` | `lapsecoin_chain.db` | Path to SQLite chain database |
 | `--peer host:port` | - | Bootstrap peer (repeatable) |
 | `--max-peers` | `125` | Hard cap on peer table size |
-| `--log-level` | `INFO` | Verbosity: DEBUG, INFO, WARNING, ERROR |
+| `--log-level` | `INFO` | Verbosity: DEBUG, INFO, WARNING, ERROR. DEBUG also turns on the per-request HTTP access log, which is kept out of INFO because polled endpoints flood it |
+| `--no-gui` | off | Run headless, no tray icon or passphrase dialog. Implied when `LAPSECOIN_PASSPHRASE` is set |
+| `--no-update-check` | off | Don't check for new releases |
+| `--update-check-url` | *(project)* | Where to look for the current version |
+| `--releases-url` | *(project)* | Where the update notice points people |
 </details>
 
 <details>
