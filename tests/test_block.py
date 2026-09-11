@@ -785,15 +785,16 @@ class TestRaceChartHeightAxis:
 
     @pytest.mark.parametrize("n", [15, 16, 100, 719, 720])
     def test_rest_gaps_clear_the_pages_minimum(self, n):
-        """MIN_GAP in odds.html stops a segment being squeezed to nothing.
-        A rest gap below it would put a handle outside its own clamp before
-        anyone had dragged anything."""
+        """MIN_GAP in odds.html keeps two handles from overlapping. A rest
+        gap below it would put a handle outside its own clamp before anyone
+        had dragged anything, so _X_TICK_COUNT and MIN_GAP have to stay
+        compatible: this fails if either is changed without the other."""
         import api as api_mod
         ticks = api_mod._race_chart(self._race(n))["x_ticks"]
         gaps = [ticks[i + 1]["frac"] - ticks[i]["frac"]
                 for i in range(len(ticks) - 1)]
 
-        assert min(gaps) > 0.02
+        assert min(gaps) > 0.05
 
     def test_short_window_gets_labels_but_no_handles(self):
         """Below the threshold the interior ticks cannot land on distinct

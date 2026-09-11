@@ -101,14 +101,14 @@
   <button type="button" id="odds-zoom-reset" class="btn-sm" style="display:none">Reset spacing</button>
   </div>
   <p class="stat-sub" style="margin-top:.4rem">
+    <span id="odds-axis-hint" style="display:none"><strong>Drag a block number along the
+    bottom</strong> to give the blocks beside it more room; every block stays on the chart,
+    so spreading one stretch out squeezes its neighbour. </span>
     Block interval is a proxy for the winning builder's real build time. Color marks the
     top 3 builders by block count in this window; everyone else shares the muted "Other"
     color. The chart is zoomed to the typical range, so a block outside it is drawn flat
     against the edge (hover for its real value). That changes only where the line is
     drawn, never the odds figure above, which counts every interval.
-    <span id="odds-axis-hint" style="display:none">Drag a marker on the height axis to give
-    the blocks beside it more room; every block stays on the chart, so spreading one stretch
-    out squeezes its neighbour.</span>
   </p>
 </div>
 <style>
@@ -116,8 +116,14 @@
      of one. Held state is set while dragging, since the pointer is
      captured on the svg and can travel well away from the mark itself. */
   .x-grip { cursor: ew-resize; }
-  .x-grip path { fill: var(--rule); transition: fill .12s; }
-  .x-grip:hover path, .x-grip.is-held path { fill: var(--accent); }
+  .x-grip text { fill: var(--ink); font-weight: 600; }
+  .x-grip-mark { fill: var(--ink-dim); }
+  .x-grip-arrow { fill: var(--rule); }
+  .x-grip-pill { fill: transparent; }
+  .x-grip path, .x-grip text { transition: fill .12s; }
+  .x-grip:hover .x-grip-pill, .x-grip.is-held .x-grip-pill { fill: var(--paper-2); }
+  .x-grip:hover path, .x-grip:hover text,
+  .x-grip.is-held path, .x-grip.is-held text { fill: var(--accent); }
 </style>
 <script id="odds-initial" type="application/json">{{ {"chart": chart, "median": race.median}|tojson }}</script>
 <script>
@@ -136,7 +142,11 @@
   // Positions are fractions of the plot width, so they keep meaning as
   // the window slides and the labels come to name different blocks.
   const STORE_KEY = "lapsecoin.odds.x_grips";
-  const MIN_GAP = 0.02;  // keeps a squeezed segment grabbable
+  // Minimum gap between two handles, as a fraction of the plot width.
+  // Set by the handle's own width (40 units of an 814-unit plot): below
+  // that two of them overlap, so a squeezed segment would end up with
+  // handles you cannot tell apart or grab to undo it.
+  const MIN_GAP = 0.05;
   let grips = null;      // fractions, one per x tick, or null for "even"
   let dragging = -1;
   let lastChart = null, lastMedian = null;
@@ -211,18 +221,31 @@
         s += `<line x1="${x}" y1="${chart.plot_top}" x2="${x}" y2="${chart.plot_bottom}" stroke="var(--rule-lt)" stroke-width="0.5" opacity="0.6"/>`;
       }
       const anchor = i === 0 ? "start" : (last ? "end" : "middle");
-      s += `<text x="${x}" y="${chart.plot_bottom + 17}" font-size="10" fill="var(--ink-dim)" text-anchor="${anchor}" pointer-events="none">${t.height}</text>`;
-      if (!end && canDrag) {
-        // A slider mark seated on the axis line, apex touching it, so it
-        // reads as something that slides along that line. The visible mark
-        // stays small enough to place a block precisely; the transparent
-        // rect around it is what you actually have to hit.
-        const b = chart.plot_bottom;
-        s += `<g class="x-grip${i === dragging ? " is-held" : ""}" data-grip="${i}">` +
-             `<rect x="${x - 13}" y="${b - 3}" width="26" height="20" fill="transparent"/>` +
-             `<path d="M ${x} ${b} l 4.5 5 l -9 0 Z"/>` +
-             `<title>Drag to give the blocks either side of ${t.height} more or less room</title></g>`;
+      const b = chart.plot_bottom;
+      if (end || !canDrag) {
+        s += `<text x="${x}" y="${b + 17}" font-size="10" fill="var(--ink-dim)" text-anchor="${anchor}">${t.height}</text>`;
+        return;
       }
+      // A handle is the marker and its label together, in one group, so
+      // the label is a thing you grab rather than a caption next to one.
+      // The pinned ends stay plain dim text, and the contrast between the
+      // two is most of what says which ones move: a marker on its own was
+      // easy to read as decoration on the axis.
+      //
+      // The pill behind it only appears on hover. The marker is a triangle
+      // seated on the axis line with its apex touching, the shape a thing
+      // that slides along a line usually has, and the arrows either side
+      // of it say which way it slides. Those are drawn at rest, not only
+      // on hover, since the whole problem is noticing it before pointing
+      // at it. The transparent rect is the real hit area.
+      s += `<g class="x-grip${i === dragging ? " is-held" : ""}" data-grip="${i}">` +
+           `<rect class="x-grip-pill" x="${x - 20}" y="${b + 1}" width="40" height="17" rx="4"/>` +
+           `<rect x="${x - 20}" y="${b - 3}" width="40" height="21" fill="transparent"/>` +
+           `<path class="x-grip-mark" d="M ${x} ${b} l 4.5 5 l -9 0 Z"/>` +
+           `<path class="x-grip-arrow" d="M ${x - 17} ${b + 9} l 3.5 -3 l 0 6 Z"/>` +
+           `<path class="x-grip-arrow" d="M ${x + 17} ${b + 9} l -3.5 -3 l 0 6 Z"/>` +
+           `<text x="${x}" y="${b + 17}" font-size="10" text-anchor="middle" pointer-events="none">${t.height}</text>` +
+           `<title>Drag to give the blocks either side of ${t.height} more or less room</title></g>`;
     });
     return s;
   }
