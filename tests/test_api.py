@@ -47,6 +47,10 @@ class _FakeNode:
     def advertised_addr(self):
         return self.addr
 
+    @property
+    def privacy_addr(self):
+        return ""
+
 
 def fresh():
     cs = ChainState.from_genesis()

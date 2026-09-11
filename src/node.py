@@ -367,6 +367,15 @@ class Node:
     _PRIVACY_ADDR_META = "privacy_address"
 
     @property
+    def privacy_addr(self):
+        """The generated privacy address, if it exists yet, regardless of
+        whether the privacy switch is currently on. ensure_privacy_key runs
+        unconditionally at startup, so this is normally always set; the
+        settings page uses it to show what flipping the switch will start
+        using, without the operator having to turn it on first to see it."""
+        return self.storage.get_meta(self._PRIVACY_ADDR_META) or ""
+
+    @property
     def privacy_keyfile(self):
         return self.keyfile + ".privacy"
 

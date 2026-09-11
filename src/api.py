@@ -937,6 +937,7 @@ def create_private_app(node, pool, private_port=8335, public_port=8333,
         ]
         ctx["advertised_addr"] = node.advertised_addr
         ctx["own_addr"] = node.addr
+        ctx["privacy_addr"] = node.privacy_addr
         return render_template("settings.html", **ctx)
 
     @app.route("/send", methods=["GET", "POST"])
