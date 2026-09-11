@@ -774,6 +774,14 @@ class Node:
         now = time.monotonic()
         remaining   = own_median - (now - vdf_start)
         window_left = self._draw_closes - now
+        if window_left <= 0:
+            # Already too late for anything, which a plain
+            # remaining > window_left misses: an evaluation running past
+            # its own estimate has a negative `remaining` too, and if it
+            # is further past its estimate than the window is past its
+            # deadline the comparison says keep going, on a height that
+            # closed. That is the exact waste this check exists to stop.
+            return True
         return remaining > window_left
 
     def open_draw(self, height):
@@ -790,8 +798,15 @@ class Node:
         it. Speed is the thing this chain pays for, so the window must not
         stretch to accommodate whoever is behind. Finishing outside it is
         simply losing the height.
+
+        Only a window that is still running is left alone. Matching on the
+        height alone would be wrong: nothing resets _draw_height when a
+        window expires, so after a reorg back below a height we already
+        held, rebuilding to that height would find its own number still
+        sitting there with a deadline long past, and that genuinely new
+        contest would get no window at all.
         """
-        if self._draw_height == height:
+        if self._draw_height == height and time.monotonic() < self._draw_closes:
             return
         self._draw_height = height
         self._draw_closes = time.monotonic() + self.settings.get(

@@ -1389,6 +1389,31 @@ class TestDraw:
         assert node._should_abandon(
             node.cs, [object()], time.monotonic() - 118.0) is False
 
+    def test_abandons_once_the_window_is_gone_even_if_overdue(self, node_env):
+        """An evaluation past its own estimate has a negative `remaining`,
+        so comparing it against an equally negative `window_left` would say
+        keep going on a height whose draw already closed."""
+        node, *_ = node_env
+        node._own_build_seconds.extend([120.0] * 5)
+        node._draw_height = node.cs.height + 1
+        node._draw_closes = time.monotonic() - 5.0      # closed 5s ago
+
+        # 150s spent against a 120s estimate, so more overdue than the
+        # window is
+        assert node._should_abandon(
+            node.cs, [object()], time.monotonic() - 150.0) is True
+
+    def test_a_new_contest_at_a_height_we_held_before_gets_a_window(self, node_env):
+        """Nothing resets _draw_height when a window expires, so a height
+        number we already used must not be able to suppress the window for
+        a genuinely new contest at it after a reorg."""
+        node, *_ = node_env
+        node.open_draw(1)
+        node._draw_closes = time.monotonic() - 1        # expired
+
+        node.open_draw(1)                               # new contest, same height
+        assert node._draw_is_open(1)
+
 
 # ---------------------------------------------------------------------------
 # 23. Hints can't be shouted down
