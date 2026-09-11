@@ -31,7 +31,7 @@ def tx_hash(tx_dict):
     """Deterministic hash of the tx's signed content, excluding the
     signature itself. Falcon-512 signing draws fresh randomness each time,
     so re-signing an identical tx (e.g. a wallet retry) produces a
-    different valid signature -- hashing it in would give the same logical
+    different valid signature, hashing it in would give the same logical
     tx a different id every time it's (re)signed, breaking hash-based
     lookups even though the nonce still prevents any double-spend. This
     mirrors Bitcoin's segwit txid fix for the same malleability class."""

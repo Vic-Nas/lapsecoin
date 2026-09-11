@@ -3,7 +3,7 @@ Unit tests for peer_udp.py's UDPTransport._dispatch, MT_TX path only.
 
 Regression test for a bug where the propagation phase was dropped on
 receive, collapsing every inbound tx to an immediate fluff regardless of
-what the sender actually put on the wire -- defeating Dandelion's stem
+what the sender actually put on the wire, defeating Dandelion's stem
 phase between processes. No sockets are opened; _dispatch is called
 directly with a hand-built message.
 """
@@ -59,7 +59,7 @@ def test_dispatch_dedups_by_msg_id():
 
 
 # ---------------------------------------------------------------------------
-# MT_GETINFO / MT_INFO wallet/version fields -- must stay wire-compatible
+# MT_GETINFO / MT_INFO wallet/version fields, must stay wire-compatible
 # with peers not carrying them yet.
 # ---------------------------------------------------------------------------
 
@@ -99,7 +99,7 @@ def test_info_reply_captures_wallet_and_version():
 
 def test_info_reply_from_older_peer_without_wallet_or_version_field():
     """An old peer's MT_INFO reply (no wallet/version keys at all) must not
-    break -- both just come back empty instead of missing/erroring."""
+    break. Both just come back empty instead of missing/erroring."""
     udp = _make_transport(MagicMock())
     ev = threading.Event()
     with udp._info_lock:
@@ -155,8 +155,8 @@ def test_ping_from_loopback_does_not_self_admit():
 
 def test_ping_from_own_private_ip_does_not_self_admit():
     """A cloud instance's own broadcast can loop back to itself over its
-    private VPC IP (e.g. AWS's 172.31.x.x behind a public/elastic IP) --
-    that must not self-admit just because the source happens to be private."""
+    private VPC IP (e.g. AWS's 172.31.x.x behind a public/elastic IP).
+    That must not self-admit just because the source happens to be private."""
     pool = MagicMock()
     udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
                        on_tx=MagicMock(), on_peers=MagicMock(), pool=pool)
@@ -168,7 +168,7 @@ def test_ping_from_own_private_ip_does_not_self_admit():
 
 def test_broadcast_discover_announces_own_port_on_discovery_socket(monkeypatch):
     """The LAN discovery broadcast must carry this node's actual data port
-    (self.port) rather than requiring every node to share one port -- two
+    (self.port) rather than requiring every node to share one port, two
     machines behind the same router commonly use different ports on
     purpose (a router can only forward one external port to one internal
     machine), and this is the whole point of a dedicated discovery port."""
@@ -198,7 +198,7 @@ def test_broadcast_discover_noop_without_discovery_socket():
 def test_disc_announce_from_lan_pings_announced_port():
     """A discovery announcement from a LAN address must trigger a PING to
     the *announced* port, not whatever port the announcement itself arrived
-    on -- that's what lets two nodes on different data ports find each
+    on, that's what lets two nodes on different data ports find each
     other."""
     udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
                        on_tx=MagicMock(), on_peers=MagicMock(), pool=MagicMock())
@@ -262,7 +262,7 @@ def test_disc_announce_bad_port_ignored():
 
 def test_disc_probe_gets_announce_reply():
     """A node still picking its own port (probe_lan_ports) sends a bare
-    probe with no port of its own -- an already-running node must reply
+    probe with no port of its own, an already-running node must reply
     with its own announce, not try to ping the prober (which has nothing
     listening on a data port yet)."""
     udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
@@ -325,7 +325,7 @@ def test_probe_lan_ports_collects_matching_replies():
 
 
 def test_probe_lan_ports_survives_a_dropped_first_probe():
-    """UDP has no delivery guarantee even on a working LAN -- simulate the
+    """UDP has no delivery guarantee even on a working LAN, simulate the
     first probe packet vanishing (respond only from the second one
     onward) and confirm the resend still gets a reply within the wait
     window, instead of the whole check silently coming back empty."""

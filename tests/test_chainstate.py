@@ -194,8 +194,8 @@ class TestIsBetterThan:
 
     def test_equal_height_lower_hash_wins_for_genesis_fallback(self):
         """Genesis has no vdf_output, so the tie-break falls back to hash
-        there specifically. Real (non-genesis) ties use vdf_output instead
-        -- see the tests below."""
+        there specifically. Real (non-genesis) ties use vdf_output
+        instead, see the tests below."""
         cs = ChainState.from_genesis()
         g = cs.tip
         blk_a = dict(g)
@@ -210,7 +210,7 @@ class TestIsBetterThan:
     def test_tie_break_uses_vdf_output_not_block_hash(self):
         """A single builder can freely change which transactions a block
         includes after finishing its VDF (the transaction list isn't part
-        of the challenge -- see block.vdf_challenge), which changes
+        of the challenge, see block.vdf_challenge), which changes
         block_hash for free. If ties were broken on block_hash, that
         builder could grind transaction-list variants to bias every tie in
         its favor at nearly zero cost, defeating the whole point of the
@@ -229,7 +229,7 @@ class TestIsBetterThan:
 
     def test_tie_break_cannot_be_overridden_by_a_lower_block_hash(self):
         """The block with the lower vdf_output wins the tie even when it
-        has the numerically higher block_hash -- proving hash alone can't
+        has the numerically higher block_hash, proving hash alone can't
         decide it, which is what stops the free transaction-list-grinding
         attack described above."""
         cs = ChainState.from_genesis()
@@ -270,7 +270,7 @@ class TestIsBetterThan:
 
 
 # ---------------------------------------------------------------------------
-# 8. apply_block (direct test -- not via validate_and_apply)
+# 8. apply_block (direct test. Not via validate_and_apply)
 # ---------------------------------------------------------------------------
 
 class TestApplyBlock:

@@ -3,7 +3,7 @@
 Purely a convenience: nothing depends on this succeeding, nothing waits
 on it, and it never raises out to the caller. If the router doesn't
 support UPnP, has it disabled, or the node is behind CGNAT (no public IP
-to map to at all), the node runs exactly as it would without this --
+to map to at all), the node runs exactly as it would without this,
 just not externally reachable without a manual port forward.
 
 miniupnpc is intentionally NOT in requirements.txt: it's a C extension
@@ -43,8 +43,8 @@ def _map_port(port, description):
             return
         u.selectigd()
         # UDP is the actual P2P transport (UDPTransport) on this port number;
-        # TCP only serves the web UI. Mapping TCP alone -- the original
-        # bug here -- left every peer connection depending purely on hole
+        # TCP only serves the web UI. Mapping TCP alone, the original
+        # bug here, left every peer connection depending purely on hole
         # punching, never actually opening the port the protocol runs on.
         mapped = []
         for proto in ("UDP", "TCP"):
@@ -52,7 +52,7 @@ def _map_port(port, description):
                 u.addportmapping(port, proto, u.lanaddr, port, description, "")
                 mapped.append(proto)
             except Exception as e:
-                # The router itself -- via UPnP, not our own LAN broadcast --
+                # The router itself, via UPnP, not our own LAN broadcast,
                 # is a second, independent way to learn "something else on
                 # this network already has this port": a real conflict comes
                 # back as ConflictInMappingEntry (UPnP IGD spec), distinct
@@ -63,7 +63,7 @@ def _map_port(port, description):
                 # path doesn't depend on broadcast reaching anything at all.
                 if "conflict" in str(e).lower():
                     log.warning("[upnp] port %d (%s) already mapped to another "
-                               "device on this network -- possibly another "
+                               "device on this network, possibly another "
                                "LapseCoin node; consider using --port to pick "
                                "a different one", port, proto)
                 else:

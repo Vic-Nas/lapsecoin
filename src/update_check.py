@@ -5,13 +5,13 @@ than a GitHub Releases API endpoint. Two reasons:
   1. It works the same way whether the canonical project or someone's fork
      bumped VERSION, without needing a formal GitHub Release object to
      exist for that bump.
-  2. raw.githubusercontent.com is served off a CDN, not GitHub's REST API
-     -- which caps unauthenticated requests at 60/hour *per source IP*,
+  2. raw.githubusercontent.com is served off a CDN, not GitHub's REST API,
+     which caps unauthenticated requests at 60/hour *per source IP*,
      shared across the whole API. Several nodes behind one NAT/office IP
      polling that API would collectively risk that shared ceiling; the
      raw-content path doesn't have this problem.
 
-This module never uploads anything about the node -- it's a plain GET of
+This module never uploads anything about the node. It's a plain GET of
 a static file, the same shape of request discovery.py's IP-echo fallback
 already makes by default.
 """
@@ -42,10 +42,10 @@ def _parse_version(s):
 def classify_update(remote: str, local: str):
     """Return None if remote isn't newer than local. Otherwise, the most
     significant differing version component:
-      'protocol' -- first component (major) changed: a wire/consensus
+      'protocol', first component (major) changed: a wire/consensus
                     break is likely; old and new nodes may not sync.
-      'critical' -- second component (minor) changed.
-      'minor'    -- only the third+ component (patch) changed.
+      'critical', second component (minor) changed.
+      'minor'   . Only the third+ component (patch) changed.
     """
     r, l = _parse_version(remote), _parse_version(local)
     if r is None or l is None:
@@ -92,7 +92,7 @@ class UpdateChecker:
             time.sleep(self.interval)
 
     def check_once(self):
-        """One check, synchronous. Never raises -- any failure (missing
+        """One check, synchronous. Never raises, any failure (missing
         'requests', network error, bad response) just leaves state as-is."""
         try:
             import requests

@@ -73,7 +73,7 @@ class TestBlockCommitFlow:
         cs.state.total_minted += 1000 * TICKS_PER_LAPSE
 
         t1 = make_tx(0, 1, TICKS_PER_LAPSE, cs.state)
-        # Same nonce -- replay attack
+        # Same nonce, replay attack
         t2 = dict(t1)
         b = make_block(1, cs.tip["hash"], [t1, t2])
         ok, err, _ = cs.validate_and_apply(b)

@@ -45,7 +45,7 @@ class TestClassifyUpdate:
         assert classify_update("1.0.0", "0.1.1") == "protocol"
 
     def test_first_component_change_wins_even_if_others_also_differ(self):
-        # Major changed *and* minor/patch changed -- protocol still wins,
+        # Major changed *and* minor/patch changed, protocol still wins,
         # since that's the most significant differing component.
         assert classify_update("2.5.9", "0.1.1") == "protocol"
 

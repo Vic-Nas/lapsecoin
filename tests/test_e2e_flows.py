@@ -2,7 +2,7 @@
 End-to-end protocol flow tests
 
 These tests exercise complete protocol scenarios from genesis through
-multi-block chains, reorgs, fee dynamics, and the emission schedule --
+multi-block chains, reorgs, fee dynamics, and the emission schedule,
 all without network or disk I/O.
 
 Flows covered:
@@ -68,13 +68,13 @@ class TestE2E_EmissionSchedule:
 
 
 # ---------------------------------------------------------------------------
-# E2E-3: Fork choice -- equal height, lower tip hash wins
+# E2E-3: Fork choice, equal height, lower tip hash wins
 # ---------------------------------------------------------------------------
 
 class TestE2E_ForkChoice:
     def test_equal_height_lower_vdf_output_wins(self):
         """Most cumulative proven work wins; ties broken by VDF output (not
-        block hash -- block_hash includes the transaction list, which
+        block hash, block_hash includes the transaction list, which
         isn't bound into the VDF challenge and so can be changed for free
         after the real work is done; see chainstate.is_better_than)."""
         cs = ChainState.from_genesis()
@@ -172,13 +172,13 @@ class TestE2E_TxLifecycle:
     def test_rejected_tx_stays_in_mempool(self):
         """Tx failing state validation stays pending."""
         cs = ChainState.from_genesis()
-        # No balance for sender -- tx will be invalid
+        # No balance for sender, tx will be invalid
         t = make_tx(3, 4, TICKS_PER_LAPSE, cs.state)
         mp = mempool_mod.Mempool()
         # We add it directly to the mempool (bypassing node.submit_tx validation)
         mp.add(t)
         assert mp.size() == 1
-        # It stays in the mempool until pruned by nonce staleness or TTL --
+        # It stays in the mempool until pruned by nonce staleness or TTL,
         # the insufficient-balance failure is only caught at block inclusion.
         pruned = mp.prune_stale(state=cs.state)
         assert mp.size() + len(pruned) == 1

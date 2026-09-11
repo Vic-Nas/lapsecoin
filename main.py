@@ -200,7 +200,7 @@ def main():
         try:
             import gui
         except ImportError:
-            # tkinter isn't a pip package -- can't be listed in
+            # tkinter isn't a pip package, can't be listed in
             # requirements.txt or fixed by `pip install`. It's bundled
             # automatically in the prebuilt binary releases (PyInstaller)
             # and in the standard Windows/macOS Python installers, but is
@@ -223,7 +223,7 @@ def main():
                 + (f"Install command detected: {' '.join(cmd)}\n" if cmd else "")
                 + "Options:\n"
                 "  [y] install it now\n"
-                "  [n] cancel -- re-run with --no-gui to run headless instead\n"
+                "  [n] cancel, re-run with --no-gui to run headless instead\n"
             )
             answer = input("Install tkinter now? [y/N] ").strip().lower()
             if answer == "y" and cmd:
@@ -288,7 +288,7 @@ def main():
         pool.touch(sender_addr)
 
     # Ask the local network who's already running a node before claiming a
-    # data port -- otherwise two machines behind the same router could both
+    # data port. Otherwise two machines behind the same router could both
     # default onto 8333, and only one of them can ever have that port
     # forwarded through the router at a time. Best-effort and bounded
     # (1.5s): no reply just means bind normally, same as always.
@@ -318,7 +318,7 @@ def main():
     udp.start()
     # udp.start() falls back further still if data_port itself turns out to
     # be taken on this machine (e.g. a second node instance, or a race with
-    # the LAN probe above) -- everything downstream that needs to know our
+    # the LAN probe above), everything downstream that needs to know our
     # port uses the port actually bound, not the one originally requested.
     port = udp.port
     log.info("[startup] UDP transport on port %d", port)
@@ -370,7 +370,7 @@ def main():
     # Off by default; toggled and its budget edited from the private
     # dashboard's /rewards page. Its background thread sleeps a full cycle
     # (an hour, by default) before its first run, so it's never racing
-    # node.start() below for the signing key -- that's always up first.
+    # node.start() below for the signing key, that's always up first.
     rewarder = UptimeRewarder(node, pool)
     rewarder.start()
 
@@ -431,7 +431,7 @@ def _prompt_new_passphrase(first=None):
 
 def _show_fatal_error(exc):
     """Last-resort visibility for a crash that happens before (or instead
-    of) the GUI window ever appears -- with console=False on Windows,
+    of) the GUI window ever appears, with console=False on Windows,
     there's no console to print a traceback to, so silence here would mean
     the app just vanishes with zero explanation. Always logged to LOG_FILE
     first (that part can't fail silently), then tries progressively more

@@ -37,7 +37,7 @@ from tests.fixtures import (
 
 
 # ---------------------------------------------------------------------------
-# VDF mock -- applied everywhere
+# VDF mock, applied everywhere
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
@@ -46,7 +46,7 @@ def mock_vdf(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Node factory -- creates a real Node with mocked networking deps
+# Node factory, creates a real Node with mocked networking deps
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -143,7 +143,7 @@ class TestNodeView:
         cs = ChainState.from_genesis()
         cs.state.credit(address(0), 1000)
         v = NodeView(cs)
-        # Mutate original -- view's snapshot should not change
+        # Mutate original, view's snapshot should not change
         cs.state.credit(address(0), 9999)
         assert v.state.get_balance(address(0)) == 1000
 
@@ -170,7 +170,7 @@ class TestLoadCs:
         crypto.save_key(keyfile, sk, pk, "pass")
         db_path = str(tmp_path / "chain2.db")
 
-        # First node -- creates genesis
+        # First node, creates genesis
         n1 = Node(
             keyfile=keyfile, public_key=pk,
             gossip=MagicMock(), syncer=MagicMock(),
@@ -179,7 +179,7 @@ class TestLoadCs:
         )
         assert n1.cs.height == 0
 
-        # Second node -- should reload genesis from db
+        # Second node, should reload genesis from db
         n2 = Node(
             keyfile=keyfile, public_key=pk,
             gossip=MagicMock(), syncer=MagicMock(),
@@ -251,7 +251,7 @@ class TestSimpleAccessors:
 
     def test_block_time_ratio_compares_own_median_to_chain_median(self, node_env):
         """block_time_ratio must be this node's own median build time divided
-        by the chain's own recent median block-to-block time -- not this
+        by the chain's own recent median block-to-block time. Not this
         node's latest build vs its own history, and not tied to whichever
         node happened to build the current tip."""
         node, *_ = node_env
@@ -508,13 +508,13 @@ class TestHandleInboundTx:
         t = make_tx(0, 1, TICKS_PER_LAPSE, node.cs.state)
         msg = {"tx": t, "sender": "1.2.3.4:1", "stemming": False}
         node._handle_inbound_tx(msg)
-        node._handle_inbound_tx(msg)  # second time -- duplicate
+        node._handle_inbound_tx(msg)  # second time, duplicate
         assert node.mempool.size() == 1
 
     def test_stem_tx_is_validated_before_being_forwarded(self, node_env):
-        """A tx still in the private phase is forwarded rather than admitted
-        -- we're a relay for it, not its destination -- but it is validated
-        first. Relaying something unvalidated would let anyone spend our
+        """A tx still in the private phase is forwarded rather than
+        admitted, we're a relay for it, not its destination, but it is
+        validated first. Relaying something unvalidated would let anyone spend our
         bandwidth, and every downstream peer's, for one crafted datagram."""
         node, _, __, gossip, *_ = node_env
         node.cs.state.credit(address(0), 10 * TICKS_PER_LAPSE)
@@ -629,7 +629,7 @@ class TestRecentStateCache:
         assert node.cs.height == 3
         assert set(node._recent_states) == {1, 2, 3}
 
-        # A sibling fork at height 3 (same parent b2, different builder) --
+        # A sibling fork at height 3 (same parent b2, different builder),
         # fork_point=3, resume_height=2, which is cached.
         b3_alt = make_block(3, b2["hash"], [], builder_index=1, vdf_output="00" * 100)
 
@@ -651,7 +651,7 @@ class TestRecentStateCache:
         b3 = make_block(3, b2["hash"], [])
         for b in (b1, b2, b3):
             node._commit(b)
-        # Cache holds only the most recent 1 entry now -- height 1 and 2
+        # Cache holds only the most recent 1 entry now, height 1 and 2
         # (needed below, as resume_height=1) were evicted, and it's not
         # the free trivial genesis case either (resume_height != 0).
         assert set(node._recent_states) == {3}
@@ -669,7 +669,7 @@ class TestRecentStateCache:
         """Reorg away from b2 (builder 0) to b2_b (builder 1), then reorg
         again to a third sibling b2_c at the same height. The second reorg
         must not reuse b2_b's now-abandoned state under b2's old cache
-        slot -- it should resume from the shared, untouched ancestor
+        slot. It should resume from the shared, untouched ancestor
         (height 1) instead, same as the first reorg did."""
         node, *_ = node_env
         g = node.cs.chain[0]
@@ -719,7 +719,7 @@ class TestApplyBetterChain:
     def test_apply_worse_chain_rejected(self, node_env):
         node, *_ = node_env
         g = node.cs.chain[0]
-        # Same-height, same chain -- not better
+        # Same-height, same chain. Not better
         ok, err = node.apply_better_chain([g])
         assert ok is False
 
@@ -743,7 +743,7 @@ class TestReorgMempool:
         node, *_ = node_env
         g = node.cs.chain[0]
         # b0 is shared by both branches, so address(0)'s balance comes from
-        # a real block reward replayed in the common prefix -- no need to
+        # a real block reward replayed in the common prefix. No need to
         # hack a balance into a mocked from_chain, which also means the
         # reorg here lands within _resume_point's cache (fork_point=2,
         # resume_height=1, populated by the _commit(b0) below), exercising
@@ -799,7 +799,7 @@ class TestReorgMempool:
     def test_reorg_does_not_readd_tx_invalid_under_new_state(self, node_env):
         """A tx from the abandoned branch that's no longer valid against the
         new chain's state (e.g. its nonce is already used there by a
-        different tx) must not be silently re-admitted -- doing so would
+        different tx) must not be silently re-admitted, doing so would
         make every subsequent self-produced block fail validation."""
         node, *_ = node_env
         node.cs.state.credit(address(0), 100 * TICKS_PER_LAPSE)
@@ -844,7 +844,7 @@ class TestRunCycleSync:
         return _evaluate
 
     def test_quiet_network_still_probes_one_random_peer(self, node_env, monkeypatch):
-        """Nothing arrived, so no peer has told us anything -- which is
+        """Nothing arrived, so no peer has told us anything, which is
         exactly the state an eclipsed node is in too. A probe is one
         datagram that ends on the work comparison, so it is affordable
         every cycle; what used to make polling expensive was the fork
@@ -874,7 +874,7 @@ class TestRunCycleSync:
 
     def test_a_block_at_or_below_our_tip_is_not_a_hint(self, node_env, monkeypatch):
         """It proves nothing about being behind, so it must not steer who
-        we ask -- the background probe picks at random instead."""
+        we ask, the background probe picks at random instead."""
         node, *_, syncer, pool, net_q = node_env
         pool.random.return_value = "random.peer:1"
         monkeypatch.setattr(node_mod.vdf_mod, "evaluate", self._slow_fake_evaluate(0.05))
@@ -986,7 +986,7 @@ class TestRunCycleSync:
 class TestRework:
     """A stem hands an item to one peer and forgets it. If that peer is a
     dead end (its only link is back to us) or the datagram is lost, the item
-    stops there and nobody else hears about it -- and the sender cannot tell
+    stops there and nobody else hears about it, and the sender cannot tell
     either case from success. Noticing it never came back is the only signal
     available, and it's what makes stemming safe on a graph we can't see.
     Without it, a block could cost its builder the whole evaluation."""
@@ -1064,7 +1064,7 @@ class TestNoIdleWaiting:
 
     def test_sibling_with_lower_output_is_taken_locally(self, node_env):
         """A candidate for a height we already committed is not late. It is
-        a chain of equal work with a lower vdf_output, so we swap to it --
+        a chain of equal work with a lower vdf_output, so we swap to it,
         built from the chain we already hold, no round trip, nobody asked."""
         node, *_, syncer, pool, net_q = node_env
         g = node.cs.tip
@@ -1098,7 +1098,7 @@ class TestNoIdleWaiting:
 
     def test_does_not_abandon_without_a_basis_to_predict(self, node_env):
         """A node that has never finished an evaluation can't estimate how
-        long this one has left, so it doesn't guess -- it finishes."""
+        long this one has left, so it doesn't guess. It finishes."""
         node, *_ = node_env
         g = node.cs.tip
         contender = make_block(1, g["hash"], [], builder_index=1)
@@ -1163,7 +1163,7 @@ class TestAdvertisedAddress:
     def test_on_advertises_a_real_key_we_hold(self, node_env, monkeypatch):
         """Peers pay advertised addresses (uptime_rewarder), so whatever we
         advertise has to be spendable by this operator. It's a real keypair,
-        encrypted to disk beside the main one -- never a throwaway, which
+        encrypted to disk beside the main one. Never a throwaway, which
         would burn the coins of anyone who paid it."""
         node, *_ = node_env
         monkeypatch.setenv("LAPSECOIN_PRIVATE_ADDRESS", "1")
@@ -1259,7 +1259,7 @@ class TestBackgroundProbe:
 
     def test_a_sync_pass_is_bounded_so_the_loop_keeps_forwarding(self, node_env):
         """A long sync that ran to completion inline blocked the loop for
-        minutes, and a node that isn't draining forwards nothing -- under a
+        minutes, and a node that isn't draining forwards nothing, under a
         stem that silently kills whatever hop was handed to it."""
         node, *_, syncer, pool, net_q = node_env
         pool.random.return_value = "random.peer:1"
@@ -1279,7 +1279,7 @@ class TestDraw:
     to whoever reached us first. Fork choice can't deliver that on its own:
     is_better_than compares output only between chains of equal work, so as
     soon as anyone builds on top of the first arrival, every sibling loses
-    no matter its output. Hence an explicit window -- during which we are
+    no matter its output. Hence an explicit window, during which we are
     building on the next height anyway, so it costs no head start."""
 
     def test_better_sibling_wins_while_the_draw_is_open(self, node_env):

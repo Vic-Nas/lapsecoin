@@ -39,7 +39,7 @@ class ChainState:
         self.state = state       # State (balance ledger)
         # Sum of vdf_iterations actually proven across the chain (excludes
         # genesis, which has no VDF proof). Used for fork choice instead of
-        # raw block count -- see is_better_than().
+        # raw block count, see is_better_than().
         self.cumulative_iterations = cumulative_iterations
 
     # ------------------------------------------------------------------
@@ -145,7 +145,7 @@ class ChainState:
         """Return True if self should replace other.
 
         Fork choice: the chain with more cumulative proven VDF iterations
-        wins -- not raw block count. A block's vdf_iterations is only
+        wins. Not raw block count. A block's vdf_iterations is only
         accepted if its VDF proof actually verifies for that many
         iterations, so this sum can't be inflated by claiming more work
         than was cryptographically proven. Raw height is not used: a
@@ -160,7 +160,7 @@ class ChainState:
         VDF output, not the block hash. block_hash includes the
         transaction list, and the transaction list is deliberately not
         bound into the VDF challenge (block.vdf_challenge), so it can be
-        changed after the fact for free -- that's the whole point, it's
+        changed after the fact for free, that's the whole point, it's
         what lets a block be corrected and rebroadcast without redoing
         the 120s. But that same freedom means tie-breaking on block_hash
         would let a single builder, with no extra hardware at all, grind

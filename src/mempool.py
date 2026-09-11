@@ -6,11 +6,11 @@ import tx as tx_mod
 
 MEMPOOL_TTL_SECONDS = 30 * 60
 
-# Hard cap on total pending tx bytes (fee-basis size, signature excluded --
+# Hard cap on total pending tx bytes (fee-basis size, signature excluded,
 # same measure block.assemble() prioritizes by). ~10x BLOCK_SIZE_LIMIT: room
 # for several blocks' worth of backlog without letting the mempool grow
 # unbounded under spam. Once full, a new tx is admitted only by outbidding
-# and evicting enough of the lowest fee-per-byte txs currently held to fit --
+# and evicting enough of the lowest fee-per-byte txs currently held to fit,
 # same eviction policy as Bitcoin Core's mempool.
 MEMPOOL_MAX_BYTES = 100_000_000
 

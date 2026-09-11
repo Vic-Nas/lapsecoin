@@ -18,7 +18,7 @@ import tx as tx_mod
 from params import GENESIS_TIMESTAMP, TICKS_PER_LAPSE
 
 # ---------------------------------------------------------------------------
-# Fixed keypairs -- generated once, reused across the suite for speed.
+# Fixed keypairs, generated once, reused across the suite for speed.
 # FALCON-512 keygen is ~5ms; pre-generating avoids 100+ keygen calls.
 # ---------------------------------------------------------------------------
 
@@ -80,7 +80,7 @@ def make_tx(
 # ---------------------------------------------------------------------------
 
 def seed_balance(state: "state_mod.State", index: int, amount_ech: float = 100.0):
-    """Credit an address with ticks. Bypasses tx validation -- for test setup only."""
+    """Credit an address with ticks. Bypasses tx validation, for test setup only."""
     ticks = int(amount_ech * TICKS_PER_LAPSE)
     state.credit(address(index), ticks)
     state.total_minted += ticks

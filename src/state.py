@@ -14,7 +14,7 @@ def compute_can_mint(total_minted: int) -> int:
 def compute_reward(total_minted: int) -> int:
     """Single source of truth for block reward. Used by State and NodeView stats.
 
-    Pure integer arithmetic -- no floating point -- so every node computes
+    Pure integer arithmetic. No floating point, so every node computes
     the exact same reward regardless of platform. See params.py for how
     the decay ratio was derived.
     """

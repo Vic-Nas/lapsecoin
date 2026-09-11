@@ -15,11 +15,11 @@ log = logging.getLogger("ec.syncer")
 FETCH_CHUNK = 50    # blocks per GETSYNC request
 # peer_udp.py now has real chunk-level ACK/retransmit for multi-chunk UDP
 # messages, so a single dropped datagram no longer silently fails an entire
-# page -- the old rationale for keeping this very small (5) no longer
+# page, the old rationale for keeping this very small (5) no longer
 # applies. 50 is chosen the way real sync protocols size a batch: well
 # below the hard caps (MAX_SYNC_BLOCKS=500 blocks per request, and
 # MAX_CHUNK_TOTAL=2000 chunks / ~2.8MB per reassembled message in
-# peer_udp.py), not matched to them -- a block would need to average
+# peer_udp.py), not matched to them, a block would need to average
 # ~56KB for 50 of them to approach that reassembly ceiling even under
 # heavy real transaction load (FALCON-512 signatures run large, but not
 # that large). Fewer round trips than before for a long initial sync,
@@ -30,7 +30,7 @@ FETCH_CHUNK = 50    # blocks per GETSYNC request
 # (see peer_udp.py), so a single dropped datagram during the binary-search
 # fork-point probe previously looked identical to "peer's chain doesn't
 # reach this height", and one during a fetch page looked identical to "fetch
-# failed" -- either way narrowing the search or aborting the sync on nothing
+# failed", either way narrowing the search or aborting the sync on nothing
 # more than packet loss. This does not apply to a real response with an
 # empty/missing chain field, which is a legitimate answer, not a timeout.
 SYNC_REQUEST_RETRIES = 2
@@ -68,7 +68,7 @@ class Syncer:
         info_timeout: how long to wait for the initial GETINFO probe.
 
         local_work: our own cumulative proven iterations, used for the
-        cheap first-round-trip bail below. Omit it and no bail happens --
+        cheap first-round-trip bail below. Omit it and no bail happens,
         correct, just not free.
 
         max_pages: stop after this many fetched pages and return, leaving
@@ -119,7 +119,7 @@ class Syncer:
         # Compared on cumulative iterations, never on height. Fork choice
         # does not use height (ChainState.is_better_than) precisely because
         # forks retarget from their own timestamps, so a chain can be
-        # *shorter* and still carry strictly more work -- and a padded-
+        # *shorter* and still carry strictly more work, and a padded-
         # timestamp fork with a low iteration requirement is exactly the
         # attack that rule exists to defeat. Bailing on height would have
         # declined to even look at the chain that beats it.
@@ -159,7 +159,7 @@ class Syncer:
 
         Two reasons: a node many blocks behind would otherwise sit with an
         unchanged height for the entire fetch, however long that takes,
-        then jump straight to the final height in one atomic step -- nothing
+        then jump straight to the final height in one atomic step, nothing
         about the transfer is actually all-or-nothing, only its visibility
         was. And a peer that drops mid-fetch now leaves behind whatever
         pages already landed instead of only the single already-existing
@@ -222,8 +222,8 @@ class Syncer:
 
         Searched over a recent window first, widening to the whole chain
         only when the window's own base already diverges. Forks here are
-        shallow by construction -- a lost race resolves within a block or
-        two -- so searching from genesis every time charged O(log chain)
+        shallow by construction, a lost race resolves within a block or
+        two, so searching from genesis every time charged O(log chain)
         round trips, growing with chain length forever, to rediscover a
         fork a few blocks back. Widening keeps the deep case correct; it
         just stops being the price of the common one.

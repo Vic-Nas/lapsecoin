@@ -3,7 +3,7 @@ Unit tests for upnp.py's port mapping.
 
 Regression test for a bug where only TCP was mapped, leaving the actual
 P2P transport (UDP, same port number) unreachable via UPnP even when a
-router successfully mapped it -- TCP only serves the web UI.
+router successfully mapped it, TCP only serves the web UI.
 
 miniupnpc is optional and not installed in this environment (see upnp.py's
 own docstring for why it's deliberately excluded from requirements.txt),
@@ -29,7 +29,7 @@ def _install_fake_miniupnpc(discover_result=1):
 
 def test_map_port_maps_both_udp_and_tcp():
     """The actual bug: UDP is the P2P transport on this port, TCP only the
-    web UI -- both must be requested, not TCP alone."""
+    web UI. Both must be requested, not TCP alone."""
     fake = _install_fake_miniupnpc()
     try:
         import upnp
@@ -73,7 +73,7 @@ def test_map_port_one_protocol_failing_does_not_block_the_other():
 
 def test_map_port_conflict_logs_warning(caplog):
     """A ConflictInMappingEntry-style failure means another device on this
-    network already holds this port -- a second, broadcast-independent
+    network already holds this port, a second, broadcast-independent
     signal for the same problem probe_lan_ports is meant to catch. Must
     surface at WARNING, not get buried at debug with ordinary failures."""
     fake = _install_fake_miniupnpc()

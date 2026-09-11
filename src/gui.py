@@ -42,7 +42,7 @@ def _resource_dir():
     for c in candidates:
         if os.path.exists(os.path.join(c, "lapsecoin.svg")):
             return c
-    # Nothing found -- return the first candidate anyway so callers get a
+    # Nothing found, return the first candidate anyway so callers get a
     # consistent (if wrong) path and _apply_icon's own try/except handles
     # the resulting failure gracefully rather than crashing here.
     return candidates[0] if candidates else "."
@@ -55,7 +55,7 @@ def _apply_icon(root):
     """Set the window icon from the already-bundled lapsecoin.png.
 
     Previously this rasterized lapsecoin.svg at runtime via cairosvg, which
-    needs libcairo -- a native library lapsecoin.spec never actually bundles
+    needs libcairo, a native library lapsecoin.spec never actually bundles
     (no collect_all/collect_dynamic_libs for it, unlike nacl/cffi/oqs/
     chiavdf), so it silently fails on any Windows machine without Cairo
     already installed system-wide. lapsecoin.png is a plain build-time-
@@ -84,7 +84,7 @@ def _install_tk_exception_logging(root):
     to sys.stderr. On a windowed (console=False) Windows build launched by
     double-click, sys.stderr is None (see main.py's own comment on this),
     so that default handler's own print() fails, and the exception it was
-    trying to report vanishes with it -- the app just closes with nothing
+    trying to report vanishes with it, the app just closes with nothing
     in the log. Logging here instead means a future crash of this kind
     actually shows up in LOG_FILE."""
     def _report(exc, val, tb):
@@ -95,7 +95,7 @@ def _install_tk_exception_logging(root):
 
 
 class _PassphraseDialog:
-    """Blocking passphrase entry with inline retry -- a wrong passphrase or
+    """Blocking passphrase entry with inline retry, a wrong passphrase or
     a too-short new one re-shows the same dialog with an error message
     instead of crashing or reopening a fresh window each attempt."""
 
@@ -210,7 +210,7 @@ def load_or_create_key_gui(keyfile):
 def _open_path(path):
     try:
         if sys.platform.startswith("win"):
-            os.startfile(path)  # noqa: S606 -- local file, user's own log
+            os.startfile(path)  # noqa: S606, local file, user's own log
         elif sys.platform == "darwin":
             subprocess.run(["open", path], check=False)
         else:
@@ -256,7 +256,7 @@ def _style_dark(root):
 def _make_tray_icon(node, on_open, on_quit):
     """Build a pystray icon so the window can fully vanish (no taskbar
     entry) while the node keeps running, with a way back in. Returns None
-    if pystray isn't available/usable on this platform -- callers must
+    if pystray isn't available/usable on this platform. Callers must
     fall back to just minimizing instead of hiding in that case, so the
     user is never left with literally no way to reopen the window."""
     try:
@@ -278,7 +278,7 @@ def _make_tray_icon(node, on_open, on_quit):
         # downsize ourselves with high-quality resampling to a real
         # tray-icon size rather than handing the OS a large image and
         # letting it scale down, which is what produced a blurry/pixelated
-        # result -- most Linux tray implementations don't use good
+        # result, most Linux tray implementations don't use good
         # downsampling on their own. No cairosvg/libcairo needed here: see
         # _apply_icon's docstring for why that dependency isn't reliable on
         # a Windows build.
@@ -288,14 +288,14 @@ def _make_tray_icon(node, on_open, on_quit):
         # transparency correctly and render it as solid black instead of the
         # panel's own background. Rather than leaving the icon transparent
         # and hoping the backend handles it, flatten it onto an opaque
-        # square matching the app's own dark theme -- worst case it's a
+        # square matching the app's own dark theme, worst case it's a
         # small dark square with the logo, not a broken black one.
         flattened = Image.new("RGBA", raw.size, _BG)
         flattened.paste(raw, (0, 0), raw)
         img = flattened.resize((32, 32), Image.LANCZOS)
 
         # Note: AppIndicator/Ayatana-based trays (GNOME/Ubuntu default) don't
-        # have a separate "left click to open" action the way Windows does --
+        # have a separate "left click to open" action the way Windows does,
         # any click always opens this menu. `default=True` only matters on
         # backends that do support a distinct default click (Windows/macOS).
         menu = pystray.Menu(
@@ -304,7 +304,7 @@ def _make_tray_icon(node, on_open, on_quit):
         )
         return pystray.Icon("lapsecoin", img, "LapseCoin", menu)
     except Exception as e:
-        # pystray itself is installed, but building/showing the icon failed --
+        # pystray itself is installed, but building/showing the icon failed,
         # on Linux this is usually a missing tray backend (AppIndicator/GTK),
         # separate from the pip package.
         print(
@@ -321,7 +321,7 @@ def run_status_window(node, udp, private_port, log_file):
     """Status window: live height/peers/mempool, a button into the local
     node UI, one to the log file.
 
-    The X button no longer quits the process -- it hides the window. If a
+    The X button no longer quits the process. It hides the window. If a
     system tray icon is available (pystray), the window disappears from
     the taskbar entirely and reopens from the tray icon; the node keeps
     running in the background either way. If pystray isn't usable on this
@@ -332,7 +332,7 @@ def run_status_window(node, udp, private_port, log_file):
     Several background components (peer_udp's callback pool, discovery's,
     the periodic HTTP reachability prober) run non-daemon ThreadPoolExecutor
     workers that can otherwise keep the interpreter alive waiting to join
-    them even after node.stop()/udp.stop() -- os._exit sidesteps that
+    them even after node.stop()/udp.stop(), os._exit sidesteps that
     entirely rather than trying to track down and gracefully join every
     one of them.
     """
@@ -458,7 +458,7 @@ def run_status_window(node, udp, private_port, log_file):
             tray_icon = None
             root.protocol("WM_DELETE_WINDOW", root.iconify)
     else:
-        # No tray available on this platform/setup -- fall back to a plain
+        # No tray available on this platform/setup, fall back to a plain
         # minimize so the user always has a way back to the window rather
         # than losing it with no path to reopen.
         root.protocol("WM_DELETE_WINDOW", root.iconify)

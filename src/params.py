@@ -15,8 +15,8 @@ EMISSION_HALFLIFE = 5_000_000  # blocks (~20 years at 2 min/block)
 # (`0.5 ** (1/N)`) depends on the platform's libm and isn't guaranteed
 # bit-identical across interpreters/OSes/CPUs, which a plain integer ratio
 # is immune to. Computed once (see EMISSION_DECAY_NUMERATOR's derivation
-# below) with 60-digit decimal precision -- far more precision than a
-# double carries -- then fixed as constants; never recomputed at runtime.
+# below) with 60-digit decimal precision, far more precision than a
+# double carries, then fixed as constants; never recomputed at runtime.
 #   from decimal import Decimal, getcontext
 #   getcontext().prec = 60
 #   one_minus = 1 - (Decimal(1) / 2) ** (Decimal(1) / EMISSION_HALFLIFE)
@@ -47,14 +47,14 @@ VDF_ITERATIONS = 12_200_000  # calibrated: ~120s on target hardware
 # VDF difficulty adjustment. The iteration count can only increase over time
 # as hardware gets faster. Adjustment happens every VDF_ADJUST_INTERVAL blocks
 # using the median real block-to-block timestamp delta across that window
-# (not a self-reported figure -- every node computes this identically from
+# (not a self-reported figure. Every node computes this identically from
 # chain data alone). If median < VDF_ADJUST_MIN_SECONDS, iterations increase
 # by VDF_ADJUST_FACTOR. Iterations never decrease; faster hardware means
 # shorter block times until the next upward adjustment, never a security
 # regression.
 #
 # Window size matches Bitcoin's actual real-time retarget window (2 weeks),
-# not its block count -- block count alone isn't the right basis, since
+# not its block count. Block count alone isn't the right basis, since
 # what resists manipulation is how long an attacker must sustain outsized
 # influence over the window's median, not how many blocks it spans. At our
 # 2-minute cadence that's 2 weeks / 2 min = 10,080 blocks.

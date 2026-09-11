@@ -5,7 +5,7 @@ Covers: FALCON-512 keygen, sign, verify; SHA-256 helpers; address derivation;
 address validation; canonical JSON; serialization for signing; key storage
 (save_key / load_pubkey / decrypt_secret_key / derive_kek / sign_with_keyfile).
 
-All tests are pure and local -- no network, no chain, no disk (key-file tests
+All tests are pure and local. No network, no chain, no disk (key-file tests
 use a tmp_path fixture).
 """
 
@@ -209,7 +209,7 @@ class TestAddressValidation:
         assert crypto.is_valid_address("") is False
 
     def test_burn_address_is_not_valid_bip39(self):
-        # "burn" must NOT pass is_valid_address -- it's a sentinel, not a real addr
+        # "burn" must NOT pass is_valid_address. It's a sentinel, not a real addr
         assert crypto.is_valid_address("burn") is False
 
 

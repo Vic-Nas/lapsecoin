@@ -8,7 +8,7 @@ Removes all HTTP probing and UPnP. Candidate pipeline now:
   5. Admit to PeerPool
 
 Separately, a periodic LAN broadcast (UDPTransport.broadcast_discover) finds
-nodes on the same local network directly -- no DHT round-trip and no
+nodes on the same local network directly. No DHT round-trip and no
 NAT/punching. It announces our own data port on a small fixed
 LAN_DISCOVERY_PORT every node also listens on, so two nodes on the same
 network that happen to run on different data ports (e.g. two machines
@@ -58,17 +58,17 @@ LAN_BROADCAST_INTERVAL = 60   # seconds between LAN broadcast discovery pings
 DHT_BOOTSTRAP_TIMEOUT  = 15   # max wait for DHT bootstrap before first query anyway
 
 # BEP5 torrent announce (BitTorrent's normal "I'm here" for this genesis's
-# swarm) is a cheap, ordinary announce_peer call -- nothing like BEP44's
+# swarm) is a cheap, ordinary announce_peer call. Nothing like BEP44's
 # mutable-item put, which needs the staggered PUT_DELAY_LOCAL/jitter to
 # avoid every node's write landing on the DHT at once. Tying it to that same
 # once-an-hour cadence (as it used to be) meant a fresh node didn't tell the
 # swarm it existed for up to PUT_DELAY_LOCAL + up to 300s of jitter, then
-# not again for another hour -- real BitTorrent clients re-announce every
+# not again for another hour, real BitTorrent clients re-announce every
 # few minutes, not hourly.
 TORRENT_ANNOUNCE_INTERVAL = 300
 
 # How often to log where discovery stands. Without this, a node with zero
-# peers just goes quiet after the startup burst -- indistinguishable from
+# peers just goes quiet after the startup burst, indistinguishable from
 # hung, same problem the VDF wait had before it got a heartbeat too.
 STATUS_LOG_INTERVAL = 60
 
@@ -123,7 +123,7 @@ class Discovery:
 
     def run(self):
         self._load_peer_cache()
-        # Cached peers from a previous run are already known-good -- connect
+        # Cached peers from a previous run are already known-good, connect
         # to them immediately rather than waiting on DHT bootstrap timing,
         # which has nothing to do with them. Same for LAN peers: broadcast
         # discovery doesn't touch the DHT at all, so there's no reason to
@@ -154,7 +154,7 @@ class Discovery:
                 log.info("[peer] external addr seeded from HTTP  addr=%s:%d", ip, self.port)
 
         # Wait for the DHT routing table to settle before issuing the first
-        # query, so it isn't sent into an empty table -- but don't just
+        # query, so it isn't sent into an empty table, but don't just
         # sleep the full worst case: most of the time bootstrap finishes
         # well under this, and firing get_all/get_peers the moment it does
         # (rather than always waiting out a flat 15s) is exactly what makes
@@ -179,7 +179,7 @@ class Discovery:
 
         self._dht.get_all(ses, my_slot)
         self._dht.torrent_get_peers(ses)
-        self._dht.torrent_announce(ses)   # own cadence -- see TORRENT_ANNOUNCE_INTERVAL
+        self._dht.torrent_announce(ses)   # own cadence, see TORRENT_ANNOUNCE_INTERVAL
         last_get = time.monotonic()
 
         while True:

@@ -5,7 +5,7 @@ Covers: check_and_sync (no peers, peer not ahead, fetch error, success,
 multi-page pagination, a later page being rejected),
 _find_fork_point (binary search, shared tip, genesis diverge, error).
 
-UDP calls are mocked via udp.request_sync -- no network.
+UDP calls are mocked via udp.request_sync. No network.
 """
 
 import os
@@ -74,7 +74,7 @@ class TestCheckAndSync:
     def test_shorter_chain_with_more_work_is_still_fetched(self):
         """Height is not what fork choice compares: forks retarget from
         their own timestamps, so a shorter chain can carry strictly more
-        proven work -- and a padded-timestamp fork with a low iteration
+        proven work, and a padded-timestamp fork with a low iteration
         requirement is the attack is_better_than exists to defeat. Bailing
         on height would decline to look at the chain that beats us."""
         syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
@@ -141,7 +141,7 @@ class TestCheckAndSync:
 
     def test_multi_page_applies_each_page(self):
         # A tail longer than one FETCH_CHUNK should call apply_fn once per
-        # page, not once for the whole tail -- this is the actual behavior
+        # page, not once for the whole tail. This is the actual behavior
         # change: height should be able to advance incrementally instead of
         # jumping straight from local height to final height in one step.
         syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])

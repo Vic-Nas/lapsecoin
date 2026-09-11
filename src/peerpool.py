@@ -71,8 +71,8 @@ class PeerPool:
     def add(self, addr, allow_private=False):
         """Add a peer. Returns True if it was new.
 
-        allow_private bypasses the private/loopback/link-local rejection --
-        only for addresses a local operator entered deliberately (the
+        allow_private bypasses the private/loopback/link-local rejection.
+        Only for addresses a local operator entered deliberately (the
         private dashboard's manual add-peer form), never for anything
         sourced from the DHT, peer-exchange, or another peer."""
         if not allow_private and not is_routable_peer_addr(addr):
@@ -111,7 +111,7 @@ class PeerPool:
 
     def set_http_reachable(self, addr, ok, checked_at=None):
         """Record the outcome of an out-of-band HTTP reachability probe
-        against addr's web UI (the actual probing happens elsewhere -- see
+        against addr's web UI (the actual probing happens elsewhere, see
         the module docstring). No-op for an address that isn't currently
         tracked, same guard as update_info."""
         with self._lock:
@@ -198,7 +198,7 @@ class PeerPool:
         exists to hide. http_reachable is
         True/False from the most recent HTTP probe (see set_http_reachable)
         if one completed within the last HTTP_REACHABLE_TTL seconds,
-        otherwise None -- stale or never-checked, treated the same as
+        otherwise None, stale or never-checked, treated the same as
         "don't know" rather than assumed reachable."""
         now_mono = time.monotonic()
         now_wall = time.time()

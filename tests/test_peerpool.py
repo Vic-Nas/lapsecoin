@@ -5,7 +5,7 @@ Covers: add (capacity, cooldown block), touch, strike (exponential cooldown,
 banning at MAX_STRIKES), remove, evict_stale, get_all (excludes cooldown),
 random, count, all_addrs.
 
-All tests are local -- no network, no disk.
+All tests are local. No network, no disk.
 """
 
 import os
@@ -362,7 +362,7 @@ class TestSnapshot:
 
     def test_http_reachable_stale_result_reads_as_none(self):
         """A probe result older than HTTP_REACHABLE_TTL is treated as
-        unknown rather than trusted indefinitely -- a peer that went
+        unknown rather than trusted indefinitely, a peer that went
         offline shouldn't stay marked reachable forever."""
         p = make_pool()
         peer = "1.2.3.4:9000"

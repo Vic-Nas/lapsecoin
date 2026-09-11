@@ -67,8 +67,8 @@ ADVERTISED_ADDRESS = Setting(
 # top of it. See Node._reorg_to_sibling for what the draw is and why it
 # needs a window at all.
 #
-# The window costs nothing in head start -- we are computing the next
-# height throughout it -- so its length trades only how long we keep
+# The window costs nothing in head start. We are computing the next
+# height throughout it, so its length trades only how long we keep
 # collecting against how much of our own next-height work we might redo.
 # That is a local call, which is why it is a setting and not a constant.
 DRAW_WINDOW_SECONDS = Setting(

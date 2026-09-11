@@ -73,7 +73,7 @@ class Cancelled(Exception):
     mechanism for this (prove() polls for the file's removal and aborts
     early). We still can't distinguish "aborted early" from "would have
     returned normally around now" from the return value alone, so a
-    caller that cancelled must not trust whatever prove() returns -- only
+    caller that cancelled must not trust whatever prove() returns, only
     that it's safe to stop waiting on this call."""
 
 
@@ -86,7 +86,7 @@ class EvaluationHandle:
     against the installed chiavdf build (not assumed): a 50M-iteration
     prove() call, deleted-file-triggered, returned in ~1.1s with an
     incomplete result instead of running to completion. evaluate() never
-    trusts that returned payload when cancelled either way -- it always
+    trusts that returned payload when cancelled either way. It always
     raises Cancelled off handle._cancelled, not off inspecting the return
     value, since an aborted call's result isn't a real proof regardless of
     what bytes happened to come back.

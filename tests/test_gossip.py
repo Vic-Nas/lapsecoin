@@ -6,7 +6,7 @@ mark_seen dedup, the stem rule (forward to a non-predecessor peer, fluff
 when there isn't one), and that fluff floods every peer but the sender,
 once per item hash.
 
-UDP calls are mocked via the udp object -- no network.
+UDP calls are mocked via the udp object. No network.
 """
 
 import os
@@ -114,7 +114,7 @@ class TestStemRule:
         it to. The walk ends here.
 
         This is the case that makes the originator's rework mandatory
-        rather than decorative -- the sender handed off and has no way to
+        rather than decorative, the sender handed off and has no way to
         know it landed on a leaf. See Node._retry_unconfirmed_spreads."""
         always_stem(monkeypatch)
         pred = "1.2.3.4:9000"

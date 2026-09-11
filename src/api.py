@@ -112,7 +112,7 @@ def fmt_balance(ticks):
 
 
 def fmt_lapse(ticks):
-    """Whole-LAPSE amount only, comma-grouped -- for compact display."""
+    """Whole-LAPSE amount only, comma-grouped, for compact display."""
     return f"{ticks // TICKS_PER_LAPSE:,} LAPSE"
 
 
@@ -196,7 +196,7 @@ def _pagination_window(page, total_pages, radius=2):
 def _recent_committed_txs(chain, limit):
     """Most recently committed transactions across the chain, tip first.
     Walks blocks backward from the tip so this stays cheap even on a long
-    chain with sparse blocks -- it stops as soon as `limit` is reached."""
+    chain with sparse blocks. It stops as soon as `limit` is reached."""
     rows = []
     for blk in reversed(chain):
         for t in reversed(blk.get("transactions", [])):
@@ -279,7 +279,7 @@ def _parse_csv_outputs(outputs_raw):
             continue
         if amt == 0:
             # A zero-amount output is never valid on the wire (tx_mod.validate
-            # rejects it), so this isn't a real output -- it's the untouched
+            # rejects it), so this isn't a real output. It's the untouched
             # half of a prefilled "address,0" line the sender left as-is.
             continue
         outputs.append({"to": addr, "amount": amt})
@@ -296,7 +296,7 @@ def fee_estimate(node):
 
     Returns {"pending": int, "min": float, "median": float, "max": float,
     "next_block": float}. next_block is 0 when the mempool doesn't fill a
-    block at all -- any non-negative fee would be included right now.
+    block at all, any non-negative fee would be included right now.
     """
     pending = node.mempool.all_txs()
     if not pending:
@@ -320,7 +320,7 @@ def fee_estimate(node):
 
 
 # ---------------------------------------------------------------------------
-# Race-odds chart (plain inline SVG -- no JS charting library, matches the
+# Race-odds chart (plain inline SVG. No JS charting library, matches the
 # rest of the site's self-contained, offline-friendly UI)
 # ---------------------------------------------------------------------------
 
@@ -334,7 +334,7 @@ _TICK_COUNT = 5  # labeled horizontal gridlines, evenly spaced across the axis
 # up adjacent regardless of building order (it's effectively a scatter over
 # time, not a fixed-order series), and a validated categorical palette only
 # holds a colorblind- and normal-vision-safe distinction for *every* pair,
-# not just neighboring ones, up to 3 slots -- a 4th fails the normal-vision
+# not just neighboring ones, up to 3 slots, a 4th fails the normal-vision
 # floor even with a legend (see dataviz skill's palette validator). Every
 # other builder folds into "other" instead of a generated 4th-plus color.
 _BUILDER_COLOR_SLOTS = ["var(--series-1)", "var(--series-2)", "var(--series-3)"]
@@ -347,16 +347,16 @@ def _race_chart(race):
     Axis range is a display decision, kept separate from the stats: it
     hugs the typical cluster of values (within 2x of the median either
     way), not the raw min/max, so one real stall doesn't compress every
-    other point into a sliver at the bottom of the chart -- that point
+    other point into a sliver at the bottom of the chart. That point
     still renders, clipped to the plot edge with a marker, and its real
     value is still in the tooltip. This has zero effect on race_odds's
     own median/odds_pct, which already use every interval unclipped (see
-    that function's docstring) -- only where the line gets drawn changes.
+    that function's docstring). Only where the line gets drawn changes.
 
     Points are colored by builder to make dominance visible: the top 3
     builders (by block count in this window) each get a fixed, validated
     color; everyone else shares one neutral "other" color plus a legend
-    entry, rather than an unbounded set of generated colors -- see
+    entry, rather than an unbounded set of generated colors, see
     _BUILDER_COLOR_SLOTS.
     """
     rows = race["window"]
@@ -421,7 +421,7 @@ def _race_chart(race):
 def _default_send_outputs(pool):
     """One 'wallet,0' line per known peer with a confirmed wallet address,
     so the sender can just change the one 0 they actually want to send
-    and leave the rest -- _parse_csv_outputs drops any line still at 0."""
+    and leave the rest, _parse_csv_outputs drops any line still at 0."""
     seen, lines = set(), []
     for row in sorted(pool.snapshot(), key=lambda r: r[1], reverse=True):
         wallet = row[4]
@@ -474,7 +474,7 @@ def _shared_read_only_routes(app, node, pool, limiter,
                 "public_port": public_port,
                 "update_checker": update_checker,
                 # Remaining budget for the masthead badge, visible on both
-                # apps -- the full settings page (/rewards) only exists on
+                # apps, the full settings page (/rewards) only exists on
                 # the private one. 0 (the default) reads as "off".
                 "rewards_remaining_lapse":
                     rewarder.status()["remaining_ticks"] / TICKS_PER_LAPSE if rewarder else 0,
@@ -633,7 +633,7 @@ def _shared_read_only_routes(app, node, pool, limiter,
 
     def _self_external_addr():
         # node.gossip (and its .udp) may not exist on every node object this
-        # is called with -- e.g. lightweight test doubles -- and plain
+        # is called with, e.g. lightweight test doubles, and plain
         # getattr(node.gossip.udp, ...) still evaluates node.gossip first,
         # so it can't catch a missing .gossip itself. Walk it defensively.
         try:
@@ -704,7 +704,7 @@ def _shared_read_only_routes(app, node, pool, limiter,
     @app.route("/api/peers/download", endpoint=pfx+"api_peers_download")
     def api_peers_download():
         # Same shape discovery.py's own PEER_CACHE_FILE reads and writes
-        # (a flat list of "ip:port" strings, pool.all_addrs()) -- this is
+        # (a flat list of "ip:port" strings, pool.all_addrs()). This is
         # meant to be saved as lapsecoin_peers.json in a new node's working
         # directory so it bootstraps from it on startup, not just a data
         # export for humans to read.
@@ -861,7 +861,7 @@ def create_private_app(node, pool, private_port=8335, public_port=8333,
     # the process lifetime (rather than per-request) is sufficient:
     # same-origin policy already stops a cross-site page from reading it
     # out of the rendered page, so all it needs to do is not be guessable
-    # and not travel to another origin -- both hold here since it's
+    # and not travel to another origin. Both hold here since it's
     # rendered in a hidden field, never in a URL.
     csrf_token = secrets.token_hex(32)
 

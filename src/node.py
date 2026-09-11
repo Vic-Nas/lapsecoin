@@ -54,7 +54,7 @@ _rng = _secrets.SystemRandom()
 #      who has the chain. See _handle_inbound_block.
 #   2. Silence. If no block arrives for meaningfully longer than the pace
 #      the chain itself is running at, either the network stalled or we
-#      are isolated -- and no inbound block is ever going to tell us that.
+#      are isolated, and no inbound block is ever going to tell us that.
 #
 # Polling on a fixed interval was a way of compensating for throwing (1)
 # away. It scaled badly for what it bought: picking a peer at random, a
@@ -83,14 +83,14 @@ SILENCE_FALLBACK_SECONDS = 600.0
 #
 # Once per cycle because a probe is now one GETINFO datagram that ends on
 # the work comparison. Frequency was never what made the old polling
-# expensive -- every poll unconditionally ran an O(log chain) fork search
+# expensive. Every poll unconditionally ran an O(log chain) fork search
 # and a fetch, and that is what had to go. At a datagram a cycle the cost
 # is a rounding error against a ~120s evaluation, so there is no reason to
 # detect an eclipse in twenty block times when one will do.
 
 # How much of a fetch to do before handing the loop back. A sync of many
 # blocks used to run to completion inline, which meant minutes during which
-# the node drained nothing and forwarded nothing -- and under a stem that is
+# the node drained nothing and forwarded nothing, and under a stem that is
 # worse than slow for us, it is destructive for everybody: a hop handed to a
 # node in that state dies there, and the sender only finds out by rework. So
 # a pass takes a bounded bite and returns; we are still behind, the trigger
@@ -117,13 +117,13 @@ VDF_HEARTBEAT_INTERVAL_SECONDS = 30
 
 # Recent-state cache: lets a shallow reorg resume from an already-computed
 # state instead of replaying the whole chain from genesis (see
-# _resume_point). Routine reorgs here are shallow -- a lost race resolves
+# _resume_point). Routine reorgs here are shallow, a lost race resolves
 # within a block or two, ties are the common case, not sustained multi-
 # height divergence (see the whitepaper's section on the VDF lottery).
 # Anything deeper than this window falls back to a full replay, which is
 # also the right conservative behavior for what would be a genuinely
 # abnormal, out-of-scope event (a sustained partition or majority
-# attacker) -- not something worth building fast-path machinery for.
+# attacker). Not something worth building fast-path machinery for.
 RECENT_STATE_CACHE_SIZE = 20
 
 
@@ -199,7 +199,7 @@ class Node:
         self._cycle_count = 0
         # Set by _handle_inbound_block when a peer shows evidence of a
         # higher chain: the address to sync from next. Evidence, not proof
-        # -- see that method. Consumed and cleared by _run_cycle.
+        #, see that method. Consumed and cleared by _run_cycle.
         self._sync_hint = None
         self._sync_hint_height = 0
 
@@ -213,7 +213,7 @@ class Node:
         self._judged_tip = None
 
         # Last background probe. Spaced by the chain's own pace rather than
-        # left to fire on every loop tick -- the cost of a probe is low, not
+        # left to fire on every loop tick, the cost of a probe is low, not
         # zero, and once per block is already as fine-grained as the thing
         # it is watching for.
         self._last_probe = time.monotonic()
@@ -224,7 +224,7 @@ class Node:
         # link is back to us) or the datagram is simply lost, the item stops
         # there and nobody else ever hears about it. We can't detect either
         # case from the send side, but we can notice that it never came
-        # back -- see _retry_unconfirmed_spreads. This is what makes the
+        # back, see _retry_unconfirmed_spreads. This is what makes the
         # stem safe on a graph we don't get to see.
         self._unconfirmed_spreads = {}
 
@@ -250,7 +250,7 @@ class Node:
         # RECENT_STATE_CACHE_SIZE heights this node has actually committed.
         # Refreshed on every commit (_commit and apply_better_chain), stale
         # entries above a reorg's fork point purged there too. Not
-        # persisted across restarts -- it exists to avoid replaying a
+        # persisted across restarts. It exists to avoid replaying a
         # shallow reorg from genesis, and self-refills within a few
         # cycles of normal running regardless; an empty cache right after
         # startup just means the fallback (full replay) applies until it
@@ -258,12 +258,12 @@ class Node:
         self._recent_states = collections.OrderedDict()
 
         # Real wall-clock seconds this node itself spent on its last 30 VDF
-        # evaluations -- recorded the moment each one finishes, regardless of
+        # evaluations, recorded the moment each one finishes, regardless of
         # whether the resulting candidate goes on to win its fork race. The
         # chain only ever holds whichever block won each height, so deriving
         # "this machine's build time" from chain timestamps would silently
         # drop every attempt that lost a race and skew toward other builders'
-        # numbers entirely. This is local, in-memory, per-node knowledge --
+        # numbers entirely. This is local, in-memory, per-node knowledge,
         # nothing else has it, so it can't be reconstructed from chain data.
         self._own_build_seconds = collections.deque(maxlen=30)
         self._load_own_build_seconds()
@@ -333,8 +333,8 @@ class Node:
         """The address this node tells peers about, which is not
         necessarily the one it builds with.
 
-        The builder address inside a block is public by construction -- it
-        has to be, or the block can't be paid -- so nothing here hides a
+        The builder address inside a block is public by construction, it
+        has to be, or the block can't be paid, so nothing here hides a
         wallet, and peers have other ways to infer the link anyway. What it
         does is stop handing that link to every peer that asks for our tip.
 
@@ -363,7 +363,7 @@ class Node:
         """Create the privacy keypair if it doesn't exist yet.
 
         Created at startup, where the passphrase is still in hand, and
-        written by the ordinary save_key with its own salt -- so it is a
+        written by the ordinary save_key with its own salt, so it is a
         standalone key file, openable with the passphrase alone and not
         chained to the main one. An earlier version encrypted it under the
         main key file's KEK purely because that was what a *running* node
@@ -396,7 +396,7 @@ class Node:
 
     def own_vdf_median(self):
         """This node's own median real VDF build time, over its last 30
-        actual attempts (own_build_seconds -- see that field's docstring).
+        actual attempts (own_build_seconds, see that field's docstring).
         None until this node has completed at least one build."""
         if not self._own_build_seconds:
             return None
@@ -508,7 +508,7 @@ class Node:
     def build_and_sign_tx_internal(self, to_outputs, fee=0):
         """Same as build_and_sign_tx, but for background node-internal
         callers (e.g. the uptime rewarder) that run inside this same
-        process while the node is up -- reuses the kek already resident in
+        process while the node is up, reuses the kek already resident in
         memory from start() instead of asking for the passphrase again,
         since re-deriving it would need the plaintext passphrase this node
         never retains past startup. Raises if the node isn't running
@@ -537,7 +537,7 @@ class Node:
         # Captured, not discarded: a peer's candidate for the height we're
         # about to build can legitimately arrive in this brief window too
         # (right at cycle start, before the wait loop below even begins),
-        # and dropping it here would silently skip it -- see
+        # and dropping it here would silently skip it, see
         # _consider_inbound_block, called on these once `cs` is known.
         pre_cycle_blocks = self._drain_queue()
         self._retry_unconfirmed_spreads()
@@ -552,7 +552,7 @@ class Node:
 
         # Run VDF in a background thread so the node loop stays responsive
         # to tx submissions and peer messages during the ~120s evaluation.
-        # `handle` lets us abort it early -- see _should_abandon and
+        # `handle` lets us abort it early, see _should_abandon and
         # vdf.EvaluationHandle's docstring.
         import concurrent.futures as _cf
         accumulated_blocks = []
@@ -566,7 +566,7 @@ class Node:
         # The version before this idled: once a competing candidate for our
         # height showed up, it sat out a settle window collecting stragglers
         # before picking. That handed the block's builder a free head start
-        # on the next height -- they were computing it while we waited. And
+        # on the next height. They were computing it while we waited. And
         # it wasn't buying anything, because a late same-height candidate is
         # still handled perfectly well after the fact: it is simply a chain
         # of equal cumulative work with a lower vdf_output, which is exactly
@@ -577,7 +577,7 @@ class Node:
 
         # Process anything that arrived in the drain at the very top of
         # this cycle (before `cs` was even known) through the same path
-        # the wait loop below uses -- see pre_cycle_blocks's comment.
+        # the wait loop below uses, see pre_cycle_blocks's comment.
         for blk in pre_cycle_blocks:
             self._consider_inbound_block(blk, cs, accumulated_blocks)
 
@@ -614,7 +614,7 @@ class Node:
                 if self.cs is not cs:
                     # The tip moved on (a sync, or a sibling that beat our
                     # own tip). What we're computing is for a parent that
-                    # is no longer ours, so it can never be committed --
+                    # is no longer ours, so it can never be committed,
                     # stop paying for it and start the next height now
                     # rather than finding out later.
                     handle.cancel()
@@ -632,7 +632,7 @@ class Node:
                     own_cancelled = True
             if own_cancelled and not _fut.done():
                 # cancel() was called but the underlying prove() hasn't
-                # unwound yet -- block until it does; chiavdf has no async
+                # unwound yet. Block until it does; chiavdf has no async
                 # cancel, only "stop at the next poll of the shutdown
                 # file", so this wait is normally short but not zero.
                 try:
@@ -651,7 +651,7 @@ class Node:
         if self.cs is not cs:
             # A mid-wait sync check adopted a better chain out from under us.
             # The VDF we just computed (or abandoned) was for cs.tip, which
-            # is no longer our tip -- apply_block() trusts previous_hash
+            # is no longer our tip, apply_block() trusts previous_hash
             # without re-checking it, so committing this candidate would
             # silently splice a block onto the wrong parent. Discard it; the
             # next cycle starts fresh against the new tip.
@@ -700,7 +700,7 @@ class Node:
 
         Nothing unvalidated may go in this list. _should_abandon reads it to
         decide whether the height is contested, and a contested height can
-        cancel an evaluation already most of the way through -- so an
+        cancel an evaluation already most of the way through, so an
         unchecked entry here means one crafted datagram throws away ~120s of
         somebody's real work. It also keeps the list bounded by what the
         network can actually produce rather than by what anyone can send.
@@ -717,7 +717,7 @@ class Node:
         stopping.
 
         Once contested, the height stays open only until somebody builds on
-        it -- at that point the chain on top carries strictly more work and
+        it, at that point the chain on top carries strictly more work and
         no same-height candidate of ours can win, however good its output.
         So the question is whether we can finish inside roughly one more
         block interval, and both sides of that are measured, not assumed:
@@ -768,7 +768,7 @@ class Node:
         on top of the first block to arrive, that chain has strictly more
         work and every sibling loses regardless of its output. Left to fork
         choice, first arrival beats the draw, which hands the height to
-        whoever is best connected -- exactly what the tie-break exists to
+        whoever is best connected, exactly what the tie-break exists to
         stop.
 
         So the window is explicit, and it is not a wait: we start building
@@ -785,7 +785,7 @@ class Node:
             return False
         # Settle the draw with a string compare before doing anything
         # expensive. A sibling whose output isn't lower cannot win, so
-        # there is nothing to replay or verify -- and without this, anyone
+        # there is nothing to replay or verify, and without this, anyone
         # could make us re-derive chain state (and verify a VDF proof) once
         # per datagram just by sending same-height blocks.
         if block_mod.tie_break_key(blk) >= block_mod.tie_break_key(cs.tip):
@@ -839,7 +839,7 @@ class Node:
     def _pick_winner(self, cs, candidate, peer_blocks):
         """Return (best_block, relay). relay=True means it came from a peer.
         Returns (None, False) if there's no viable winner (candidate stale,
-        or candidate is None and no peer block validated either -- this
+        or candidate is None and no peer block validated either, this
         cycle contributes nothing, which is fine, the next one starts fresh).
 
         cs: the ChainState candidate was built against; passed explicitly so
@@ -876,7 +876,7 @@ class Node:
             return None, False
 
         # Among all equally-valid same-height candidates (all proving the
-        # same required iterations), the lowest vdf_output wins -- the same
+        # same required iterations), the lowest vdf_output wins, the same
         # rule ChainState.is_better_than uses, so a node's own immediate
         # pick can't diverge from what syncer would settle on anyway.
         winner   = min(entrants, key=block_mod.tie_break_key)
@@ -896,13 +896,13 @@ class Node:
 
         # Nothing is propagated from here. A peer block was already passed
         # on when it arrived (_handle_inbound_block), and our own candidate
-        # when we built it -- re-sending at commit time would just be a
+        # when we built it, re-sending at commit time would just be a
         # second copy of something the network already has.
 
         # The height we just took is now open for its draw: a better
         # candidate for it can still win until the window closes, while we
         # get on with the next height in the meantime. Our own finished
-        # candidate closes it immediately (below) -- at that point we have
+        # candidate closes it immediately (below), at that point we have
         # compared everything we were ever going to.
         self.open_draw(blk["height"])
 
@@ -957,7 +957,7 @@ class Node:
         An echo from the peer we stemmed to is not evidence of anything.
         That peer already has the item by construction, so it can drop it on
         the floor and hand it straight back, and we would call the walk a
-        success and never re-send -- one datagram from the single node we
+        success and never re-send. One datagram from the single node we
         chose to trust, and the block is gone. Requiring the echo to come
         from anyone else means swallowing an item quietly now takes a second
         peer of ours in on it.
@@ -1089,8 +1089,8 @@ class Node:
             budget=self._echo_deadline_seconds(),
         )
         if hinted and not adopted:
-            # The hint was a block we could not validate -- we don't have
-            # its parents -- so acting on it is a bet, and this peer just
+            # The hint was a block we could not validate. We don't have
+            # its parents, so acting on it is a bet, and this peer just
             # lost it. Without a cost here, one crafted datagram buys an
             # attacker a sync attempt, repeatable for as long as they care
             # to send them. A strike is the existing price for a peer that
@@ -1104,7 +1104,7 @@ class Node:
 
         The pool already records every peer's claimed height from each
         INFO exchange; picking with it instead of uniformly at random is
-        free. It stays a claim, never a conclusion -- it only decides who
+        free. It stays a claim, never a conclusion. It only decides who
         is worth one round trip.
         """
         best, best_height = None, -1
@@ -1127,8 +1127,8 @@ class Node:
           propagate (gossip.relay_block), and hand it to the cycle, which
           re-checks it against the tip it actually raced for.
 
-        - Further ahead than our tip+1. We cannot validate it -- we don't
-          have its parents -- so it is evidence, not proof, and we must not
+        - Further ahead than our tip+1. We cannot validate it. We don't
+          have its parents, so it is evidence, not proof, and we must not
           relay it: passing on something we can't vouch for would let anyone
           spend the whole network's bandwidth for one crafted datagram.
           What it does do is tell us who to ask. Being lied to costs exactly
@@ -1155,7 +1155,7 @@ class Node:
             # Only now: a block that hasn't validated proves nothing about
             # the network still producing blocks, and treating it as proof
             # would let one datagram hold the silence trigger open forever
-            # -- which is exactly what an eclipsing peer would want.
+            #, which is exactly what an eclipsing peer would want.
             self._last_block_seen = time.monotonic()
             self._note_echo(blk["hash"], sender)
             self.gossip.relay(blk, gossip_mod.KIND_BLOCK, blk["hash"],
@@ -1178,7 +1178,7 @@ class Node:
         """Route an inbound tx: validate, admit to the mempool, propagate.
 
         A tx still in the private phase is forwarded without being admitted
-        here -- we're a relay for it, not its destination -- but it is still
+        here, we're a relay for it, not its destination, but it is still
         validated first. Relaying something unvalidated would let anyone
         spend our bandwidth (and every downstream peer's) for the price of
         one crafted datagram.
@@ -1238,7 +1238,7 @@ class Node:
             itself, already fully built and sitting in memory.
           - a shallow reorg: a cached recent state (see _remember_state).
         Returns None if neither applies (a reorg deeper than the cache, or
-        shortly after a restart before the cache has refilled) -- callers
+        shortly after a restart before the cache has refilled), callers
         fall back to a full replay in that case, which is also the right
         conservative behavior for what would be a genuinely abnormal, deep
         divergence (see RECENT_STATE_CACHE_SIZE).
@@ -1248,7 +1248,7 @@ class Node:
         resume_height = fork_point - 1
         if resume_height == 0:
             # State right after genesis is always trivially known (empty
-            # balances, zero iterations -- genesis carries no transactions
+            # balances, zero iterations, genesis carries no transactions
             # and contributes nothing to cumulative_iterations), no need
             # to consult the cache for this one.
             return ChainState(remote_chain[:fork_point], state_mod.State(), 0)
@@ -1289,7 +1289,7 @@ class Node:
         if base_cs is not None:
             # Extension or shallow reorg: validate and apply just the new
             # tail onto an already-known state, instead of re-deriving the
-            # whole chain from scratch -- ChainState.from_chain (the branch
+            # whole chain from scratch, ChainState.from_chain (the branch
             # below) replays every block since genesis on every call, so
             # without this a node syncing far behind in many small pages
             # (or hitting a routine reorg) would redo that full replay each
@@ -1314,7 +1314,7 @@ class Node:
             # shortly after a restart): fall back to a full replay. Also
             # the right conservative behavior for what would be a
             # genuinely abnormal, deep divergence. _validate_tail already
-            # builds the resulting ChainState as it validates -- reuse it
+            # builds the resulting ChainState as it validates, reuse it
             # directly rather than replaying the same chain a second time
             # via a separate ChainState.from_chain(remote_chain) call.
             try:
@@ -1335,7 +1335,7 @@ class Node:
 
     def _readd_valid_txs(self, txs, exclude_hashes, state):
         """Re-add unconfirmed txs to the mempool, each validated against
-        state first -- a stale-nonce or otherwise now-invalid tx must not
+        state first, a stale-nonce or otherwise now-invalid tx must not
         be silently re-admitted. Also re-floods each one: it fell out of a
         reorged-away block, so other nodes on the now-canonical chain may
         never have seen it at all, and without this it would just sit in
@@ -1374,8 +1374,8 @@ class Node:
                                     # this, not the new chain we're about to swap in
         # self.cs/self.view must track storage the instant it succeeds. A
         # failure past this point (e.g. a malformed re-added tx) must not
-        # leave storage on the new chain while self.cs -- what mining and
-        # validation actually run against -- still points at the old one.
+        # leave storage on the new chain while self.cs, what mining and
+        # validation actually run against, still points at the old one.
         # Stale cache entries at or above fork_point belonged to the branch
         # just abandoned; a later reorg landing on one of those heights
         # must not reuse state from blocks that are no longer canonical.
@@ -1397,8 +1397,8 @@ class Node:
 
     def _reorg_mempool(self, fork_point, old_chain, new_chain, new_state):
         """Re-add unconfirmed txs from the abandoned local branch, validated
-        against the new chain's state (not the old chain being replaced --
-        a tx that's no longer valid under the new chain must not be
+        against the new chain's state (not the old chain being replaced.
+        A tx that's no longer valid under the new chain must not be
         silently re-admitted, or it can stall this node's own block
         production every cycle until it's pruned)."""
         old_txs = [t for blk in old_chain[fork_point:]

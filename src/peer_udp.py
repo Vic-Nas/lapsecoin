@@ -17,8 +17,8 @@ Each chunk is numbered; for a genuinely multi-chunk message (chunk_total > 1),
 the receiver ACKs its current chunk holdings (MT_ACK) after every chunk it
 gets, and the sender resends only what's still missing, for up to
 CHUNK_ACK_MAX_ROUNDS rounds (see _send_chunked / _retransmit_until_acked /
-_handle_ack). A message still stuck incomplete after that -- or one whose
-reassembly buffer just goes stale from real inactivity -- is dropped
+_handle_ack). A message still stuck incomplete after that, or one whose
+reassembly buffer just goes stale from real inactivity, is dropped
 (_Reassembler.evict_stale), same as before. Talking to a peer too old to
 know MT_ACK exists degrades safely to exactly that prior behavior: no ACK
 ever arrives, every round resends the whole message (wasteful but harmless,
@@ -98,7 +98,7 @@ SYNC_TIMEOUT     = 30.0   # seconds to wait for a full sync response
 PING_TIMEOUT     = 8.0    # seconds to wait for PONG
 
 # LAN discovery: a small fixed port every node also listens on, separate
-# from its actual data port (self.port, which may be anything -- two nodes
+# from its actual data port (self.port, which may be anything, two nodes
 # behind the same router commonly use different ports on purpose, since a
 # router can only port-forward one external port to one internal machine).
 # Announcing "I'm on port X" over this shared, well-known port lets nodes on
@@ -125,12 +125,12 @@ MAX_CHUNK_TOTAL   = 2000   # ~2.8MB reassembled, well above any real message
 RATE_LIMIT_PER_SEC = 50
 RATE_LIMIT_BURST    = 100
 
-# Chunk-level ACK/retransmit for multi-chunk sends (chunk_total > 1 only --
+# Chunk-level ACK/retransmit for multi-chunk sends (chunk_total > 1 only,
 # most messages fit in one datagram and stay pure fire-and-forget). The
 # receiver ACKs its current chunk holdings after every chunk it gets; the
 # sender resends only what's still missing, a few times, then gives up.
 # Against a peer too old to know MT_ACK exists, no ACK ever arrives, so
-# every round resends the whole message -- wasteful but harmless (chunks
+# every round resends the whole message, wasteful but harmless (chunks
 # are idempotent to re-receive) and still bounded by CHUNK_ACK_MAX_ROUNDS,
 # degrading to exactly today's one-shot fire-and-forget behavior once
 # exhausted, never hanging.
@@ -139,7 +139,7 @@ CHUNK_ACK_MAX_ROUNDS = 4
 
 # Header: 1 (type) + 4 (msg_id) + 2 (chunk_idx) + 2 (chunk_total) = 9 bytes
 HDR_FMT  = "!BIHh"  # chunk_total is signed, but MT_ACK is what actually
-# distinguishes an ack datagram (see _handle_ack) -- it's just an ordinary
+# distinguishes an ack datagram (see _handle_ack). It's just an ordinary
 # single-chunk (chunk_total=1) message of that type, no sentinel value needed.
 HDR_SIZE = struct.calcsize(HDR_FMT)
 
@@ -168,7 +168,7 @@ def _broadcast_from_all_interfaces(payload: bytes, port: int):
     """Send payload to the LAN broadcast address once per local interface.
 
     A single unbound (0.0.0.0) broadcast send leaves the OS's routing table
-    to pick the egress interface via the default route -- on a real machine
+    to pick the egress interface via the default route, on a real machine
     that's very often *not* the LAN adapter, since any VPN client, Docker,
     Hyper-V, or VirtualBox virtual adapter routinely takes that spot. The
     broadcast then goes out silently nowhere useful, no error either side.
@@ -188,7 +188,7 @@ def _broadcast_from_all_interfaces(payload: bytes, port: int):
 
 
 def _is_lan_source(host: str) -> bool:
-    """True for a private, non-loopback address -- i.e. one that could only
+    """True for a private, non-loopback address, i.e. one that could only
     have reached us over the local network, never routed from the public
     internet. Loopback is excluded so a node never treats its own broadcast
     echo (same host, different process) as a peer."""
@@ -219,8 +219,8 @@ def probe_lan_ports(genesis_hash: str, wait: float = 1.5,
                     disc_port: int = LAN_DISCOVERY_PORT) -> set[int]:
     """Ask the local network "who's already running a node here" before
     picking a data port to bind, so a second machine on the same LAN
-    doesn't default to a port another machine there is already using --
-    each still keeps its own distinct, independently port-forwardable
+    doesn't default to a port another machine there is already using.
+    Each still keeps its own distinct, independently port-forwardable
     port. Standalone (no running UDPTransport needed): main.py calls this
     before it has even chosen its own port yet.
 
@@ -232,7 +232,7 @@ def probe_lan_ports(genesis_hash: str, wait: float = 1.5,
 
     Returns whatever data ports currently-running nodes with the same
     genesis reply with. Best-effort: an empty result just means "nobody
-    answered in time" or broadcast doesn't reach on this network -- never
+    answered in time" or broadcast doesn't reach on this network, never
     a reason to fail startup."""
     found: set[int] = set()
     ifaces = [ip for ip in _local_ips() if not ip.startswith("127.")] or ["0.0.0.0"]
@@ -257,7 +257,7 @@ def probe_lan_ports(genesis_hash: str, wait: float = 1.5,
                 log.debug("[udp] LAN port probe send failed", exc_info=True)
 
     try:
-        # UDP has no delivery guarantee even on a fully working LAN -- a
+        # UDP has no delivery guarantee even on a fully working LAN, a
         # single dropped broadcast would otherwise look identical to "no
         # other node here". Re-send a couple more times across the wait
         # window rather than betting the whole check on one packet; replies
@@ -360,7 +360,7 @@ class _Reassembler:
     def held_chunks(self, addr, msg_id):
         """Chunk indices currently held for (addr, msg_id), for ACKing.
         Returns [] once the message has completed (feed() already deleted
-        the entry) -- callers must special-case the completing feed() call
+        the entry). Callers must special-case the completing feed() call
         themselves if they need to ACK all indices in that case."""
         key = (addr, msg_id)
         with self._lock:
@@ -411,7 +411,7 @@ class UDPTransport:
         # (target_addr, msg_id) -> {"chunks": {idx: bytes}, "acked": set(),
         # "msg_type": int, "event": Event}. Keyed by target too, not just
         # msg_id, because a broadcast (send_block) reuses one
-        # msg_id across many targets -- keying by msg_id alone would let
+        # msg_id across many targets, keying by msg_id alone would let
         # concurrent targets clobber each other's ack tracking.
         self._pending_chunked_sends: dict[tuple, dict] = {}
         self._chunk_lock  = threading.Lock()
@@ -467,7 +467,7 @@ class UDPTransport:
         LAN_DISCOVERY_PORT, decoupled from self.port (which may differ
         between two nodes on the same network on purpose). Failing to bind
         it (e.g. another local process already holds it) just means no LAN
-        auto-discovery for this node -- never fatal."""
+        auto-discovery for this node. Never fatal."""
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -517,7 +517,7 @@ class UDPTransport:
                 result = self._pong_addrs.pop(msg_id, None)
                 self._pong_events.pop(msg_id, None)
             # Vote on our external address. Require agreement from 2 distinct
-            # voters that are already admitted to the peer pool -- otherwise
+            # voters that are already admitted to the peer pool. Otherwise
             # two throwaway addresses answering our own outbound PINGs could
             # feed a false "observed" address before ever being trusted.
             if result:
@@ -538,7 +538,7 @@ class UDPTransport:
 
         stemming marks the private phase, so the receiver knows to apply the
         stem rule rather than treat it as public. Propagation decisions live
-        entirely in gossip.py -- this layer only puts bytes on the wire, and
+        entirely in gossip.py. This layer only puts bytes on the wire, and
         deliberately does not relay on the receiver's behalf (see the
         MT_BLOCK branch in _dispatch)."""
         if peers is None:
@@ -615,7 +615,7 @@ class UDPTransport:
 
     def broadcast_discover(self):
         """Announce our data port on the shared LAN_DISCOVERY_PORT so other
-        nodes with the same genesis on this network segment can find us --
+        nodes with the same genesis on this network segment can find us,
         regardless of what data port either of us actually runs on (two
         nodes behind the same router commonly differ on purpose, since a
         router can only port-forward one external port to one internal
@@ -623,7 +623,7 @@ class UDPTransport:
         every local interface (see _broadcast_from_all_interfaces) rather
         than through self._disc_sock's own wildcard bind, since sending
         from an unbound socket leaves interface selection to the OS's
-        default route -- unreliable on a machine with any other active
+        default route, unreliable on a machine with any other active
         network adapter (VPN, Docker, Hyper-V, VirtualBox, ...)."""
         if not self._disc_sock:
             return
@@ -656,7 +656,7 @@ class UDPTransport:
             # A node still choosing its own data port (probe_lan_ports, run
             # before it has bound one) asking who's already active on this
             # network. Reply with our own announce directly to it, even
-            # though it isn't listening on LAN_DISCOVERY_PORT itself --
+            # though it isn't listening on LAN_DISCOVERY_PORT itself,
             # UDP replies go straight to the sender's actual (ip, port).
             try:
                 reply = _encode({"type": "announce", "genesis": self.genesis_hash,
@@ -670,7 +670,7 @@ class UDPTransport:
         if not isinstance(port, int) or not (0 < port <= 65535):
             return
         # Confirm reachability at the announced port over the ordinary
-        # PING/PONG path -- ping() already admits a private-source PONG to
+        # PING/PONG path, ping() already admits a private-source PONG to
         # the pool on sight, so a genuine node on the other end just peers
         # up from here with no further plumbing needed. Already running off
         # the recv thread (see _disc_recv_loop's own executor.submit), so
@@ -815,7 +815,7 @@ class UDPTransport:
                     self._on_peer_hint(announced)
                 # A private-range source could only have reached us over the
                 # local network (never routed off the public internet), so
-                # it's admissible on sight -- this is what makes broadcast
+                # it's admissible on sight. This is what makes broadcast
                 # discovery (and any direct LAN ping) actually peer up,
                 # without waiting on the DHT/punch pipeline at all. Excludes
                 # our own IPs so a looped-back broadcast doesn't self-admit.
@@ -848,7 +848,7 @@ class UDPTransport:
                     # layer would mean forwarding a block nobody has
                     # validated yet, and would bypass the stem/fluff rule
                     # entirely. Propagation is gossip.py's decision, taken
-                    # after Node validates -- see gossip.relay_block.
+                    # after Node validates, see gossip.relay_block.
                     self._on_block(block, sender_addr,
                                    bool(data.get("stemming", False)))
 
@@ -886,7 +886,7 @@ class UDPTransport:
         elif msg_type == MT_GETINFO:
             # Peer requesting our tip info; respond with height + tip hash
             # (+ our wallet address and software version, purely
-            # informational -- see set_tip_provider).
+            # informational, see set_tip_provider).
             self._pool.touch(sender_addr)
             if self._get_tip_fn:
                 height, tip_hash, wallet, version, work = self._get_tip_fn()
@@ -917,7 +917,7 @@ class UDPTransport:
                         "wallet":   data.get("wallet", ""),
                         "version":  data.get("version", ""),
                         # Absent from peers too old to send it; None means
-                        # "unknown", never "zero" -- see Syncer.
+                        # "unknown", never "zero", see Syncer.
                         "work":     data.get("work"),
                     }
                     self._info_events[msg_id].set()
@@ -994,7 +994,7 @@ class UDPTransport:
 
     def _retransmit_until_acked(self, target: tuple, msg_id: int, total: int):
         """Resend only the chunks a peer hasn't ACKed yet, a bounded number
-        of times, then give up and stop tracking -- see CHUNK_ACK_* above
+        of times, then give up and stop tracking, see CHUNK_ACK_* above
         for why this degrades safely against a peer that never ACKs."""
         key = (target, msg_id)
         for _round in range(CHUNK_ACK_MAX_ROUNDS):
@@ -1003,7 +1003,7 @@ class UDPTransport:
             if state is None:
                 return  # already cleaned up (fully acked, or evicted)
             if state["event"].wait(CHUNK_ACK_TIMEOUT):
-                break  # fully acked -- _handle_ack set this
+                break  # fully acked, _handle_ack set this
             with self._chunk_lock:
                 state = self._pending_chunked_sends.get(key)
                 if state is None:
@@ -1046,7 +1046,7 @@ class UDPTransport:
         """fn() -> (height, tip_hash, wallet, version, cumulative_iterations).
         Used for lightweight
         MT_GETINFO responses. wallet is our own address, shared here purely
-        so peers can display/use it (e.g. for gifting) -- it's already
+        so peers can display/use it (e.g. for gifting). It's already
         public the moment we build a block, this just makes it available
         without needing to wait for or find one. version is our own
         software version, so peers can flag when we're outdated."""

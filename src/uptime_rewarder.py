@@ -1,7 +1,7 @@
 """In-process uptime-reward payout for peers that can't mine yet.
 
 Runs directly inside the node process: no HTTP round-trips, no CSRF
-dance, no re-supplying the passphrase every cycle -- signs with the kek
+dance, no re-supplying the passphrase every cycle, signs with the kek
 already resident in memory while the node is running
 (Node.build_and_sign_tx_internal).
 
@@ -87,7 +87,7 @@ class UptimeRewarder:
 
     def adjust_budget(self, delta_lapse):
         """Change remaining_ticks by delta_lapse LAPSE (+ or -), floored at
-        0 -- this is what an edited budget number on the settings page
+        0. This is what an edited budget number on the settings page
         turns into: the field IS the remaining budget, editable in place."""
         with self._lock:
             delta_ticks = int(delta_lapse * TICKS_PER_LAPSE)
@@ -112,7 +112,7 @@ class UptimeRewarder:
     def run_once(self):
         """One full cycle: resolve last cycle's pending tx, then (if budget
         remains) pay eligible peers. Safe to call directly, e.g. for
-        testing -- not gated on the thread being alive."""
+        testing. Not gated on the thread being alive."""
         self._resolve_pending()
 
         with self._lock:

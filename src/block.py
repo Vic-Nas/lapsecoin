@@ -23,7 +23,7 @@ def get_vdf_iterations(chain) -> int:
     """Return the VDF iteration count required for the next block
     (height = len(chain)) built on top of `chain`.
 
-    Deterministically derived from real block timestamps -- no
+    Deterministically derived from real block timestamps, no
     self-reported or otherwise-unverifiable field is trusted. Assemblers
     and validators call this on the same chain prefix and always agree,
     including exactly at adjustment boundaries.
@@ -44,7 +44,7 @@ def get_vdf_iterations(chain) -> int:
     # next_height == last_boundary: assembling/validating the boundary
     # block itself. Fold in the window that just completed, using real
     # timestamp deltas between consecutive blocks (not a self-reported
-    # figure) -- the same signal Bitcoin's own retarget relies on.
+    # figure), the same signal Bitcoin's own retarget relies on.
     window_start      = last_boundary - VDF_ADJUST_INTERVAL
     prior_iterations  = chain[window_start].get("vdf_iterations", VDF_ITERATIONS)
     deltas = [
@@ -57,11 +57,11 @@ def get_vdf_iterations(chain) -> int:
 
 
 # Blocks looked at on either side of a given block when computing its
-# "vs median" block time for display -- distinct from (and much smaller
+# "vs median" block time for display, distinct from (and much smaller
 # than) the consensus retarget window in get_vdf_iterations.
 BLOCK_TIME_MEDIAN_WINDOW = 30
 
-# Blocks looked at for the race-odds page -- about 1 day at the ~120s
+# Blocks looked at for the race-odds page, about 1 day at the ~120s
 # target. Display-only, like BLOCK_TIME_MEDIAN_WINDOW above.
 ODDS_WINDOW_BLOCKS = 720
 
@@ -69,7 +69,7 @@ ODDS_WINDOW_BLOCKS = 720
 def block_time_stats(chain, height):
     """This block's own time-since-parent vs. the local median, and their
     difference. None for genesis, which has no parent to measure from.
-    Display-only -- not a consensus value."""
+    Display-only. Not a consensus value."""
     if height <= 0:
         return None
     own = chain[height]["timestamp"] - chain[height - 1]["timestamp"]
@@ -114,7 +114,7 @@ def race_odds(chain, own_seconds):
        "odds_pct": float or None}
     odds_pct is the percentage of this window's intervals own_seconds beats.
     A real network stall shows up as one unusually long interval that
-    own_seconds trivially beats -- display-only, so that's an acceptable
+    own_seconds trivially beats, display-only, so that's an acceptable
     accuracy tradeoff for not special-casing outliers.
     """
     window = race_window(chain)
@@ -153,7 +153,7 @@ def vdf_challenge(previous_hash: str, builder: str) -> bytes:
 
 def tie_break_key(blk):
     """Sort key for choosing among equally-valid, same-height blocks: the
-    lowest key wins. Must be vdf_output, not block_hash or arrival order --
+    lowest key wins. Must be vdf_output, not block_hash or arrival order,
     see ChainState.is_better_than for why. Falls back to hash only for
     genesis, which never actually ties against anything."""
     return blk.get("vdf_output") or blk["hash"]
@@ -290,7 +290,7 @@ def _apply_transactions(blk, state):
     (standard practice for a plaintext mempool, e.g. Bitcoin): an included
     transaction's nonce must be exactly current+1 given prior transactions
     already applied within this same block. There is no consensus-level
-    canonical ordering requirement -- a block can list its transactions in
+    canonical ordering requirement, a block can list its transactions in
     whatever order the builder chose, as long as each one is valid against
     the state as of applying the ones before it.
     """
@@ -340,7 +340,7 @@ def assemble(tip, txs, builder_addr, iterations, deadline=None):
     priority. Adds whole groups in that priority order; within a group,
     stops at the first transaction that doesn't fit, since including a
     later nonce without its predecessor would create a gap and invalidate
-    the whole block -- unlike across different senders, where skipping one
+    the whole block, unlike across different senders, where skipping one
     that doesn't fit to let a later, smaller one from someone else in is
     fine. Returns a block dict without a VDF proof attached; the caller
     adds vdf_output, vdf_proof, and recomputes the hash.

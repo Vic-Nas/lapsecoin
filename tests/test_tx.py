@@ -5,7 +5,7 @@ Covers: create, tx_hash, tx_size, tx_size_in_block, validate (fields/
 outputs, signature, nonce, balance checks). Fees are sender-bid, so there
 is no protocol fee formula to test here.
 
-All tests are pure and local -- no network, no chain, no disk.
+All tests are pure and local. No network, no chain, no disk.
 """
 
 import os
@@ -139,7 +139,7 @@ class TestTxSize:
 
 
 # ---------------------------------------------------------------------------
-# 4. validate -- field / output checks
+# 4. validate, field / output checks
 # ---------------------------------------------------------------------------
 
 class TestValidateFields:
@@ -200,7 +200,7 @@ class TestValidateFields:
 
 
 # ---------------------------------------------------------------------------
-# 5. validate -- signature check
+# 5. validate, signature check
 # ---------------------------------------------------------------------------
 
 class TestValidateSignature:
@@ -232,7 +232,7 @@ class TestValidateSignature:
 
 
 # ---------------------------------------------------------------------------
-# 6. validate -- nonce check (sequential, per sender)
+# 6. validate, nonce check (sequential, per sender)
 # ---------------------------------------------------------------------------
 
 class TestValidateNonce:
@@ -263,7 +263,7 @@ class TestValidateNonce:
 
 
 # ---------------------------------------------------------------------------
-# 7. validate -- balance check (outputs + fee <= balance)
+# 7. validate, balance check (outputs + fee <= balance)
 # ---------------------------------------------------------------------------
 
 class TestValidateBalance:

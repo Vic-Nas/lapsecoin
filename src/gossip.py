@@ -4,7 +4,7 @@ Why one mechanism
 -----------------
 Blocks and txs are the same problem: get an item to every node without
 advertising that this node is where it came from. They used to propagate
-two different ways -- blocks epidemically at the transport layer (msg_id
+two different ways. Blocks epidemically at the transport layer (msg_id
 dedup, sender excluded, no stem at all, and relayed *before* anyone
 validated them), txs at this layer (hash dedup, no sender exclusion, stem
 with a peer-count cliff). Two mechanisms meant two sets of bugs and two
@@ -29,7 +29,7 @@ if there is no such peer, fluff.
 That last clause is what replaces the old MIN_PEERS_FOR_STEM cliff, and
 it is deliberately not a special case: it is the same condition evaluated
 everywhere, it just fires more often on a sparse graph. Note it is a
-*preference* against the predecessor, never a hard exclusion -- a node
+*preference* against the predecessor, never a hard exclusion, a node
 with one peer cannot assume that peer has any onward link, so refusing to
 use it would strand the item rather than protect it. Fluffing early costs
 a little anonymity; dead-ending loses the item.
@@ -41,8 +41,8 @@ immediately by itself, on a well-connected one it keeps going.
 Rework
 ------
 The originator holds an item it started and watches for its own flood to
-come back (see Node). No echo means the walk died somewhere -- a dropped
-datagram, a peer that went away mid-walk -- so it is re-sent. That only
+come back (see Node). No echo means the walk died somewhere, a dropped
+datagram, a peer that went away mid-walk, so it is re-sent. That only
 happens on failure, so its cost is proportional to the failure rate, not
 to traffic.
 """
@@ -64,7 +64,7 @@ SEEN_CACHE_SIZE = 50_000
 # This is a policy constant, not a derived one, and it is worth being blunt
 # about that: it trades anonymity against latency, and those two have no
 # common unit to optimise over. Nothing a node can measure locally tells it
-# the right value. What *is* derived is everything around it -- the walk
+# the right value. What *is* derived is everything around it, the walk
 # stops on its own when the graph runs out of peers, and the rework timeout
 # below comes from measured echo latency.
 #
@@ -79,7 +79,7 @@ def _random_fraction():
     Deliberately not random.random(): the stem's stop decision and its
     choice of next hop are what an observer would have to guess to place an
     item's origin, and Mersenne Twister is reconstructible from enough
-    observed output. Both are cheap here -- one draw per hop, per item --
+    observed output. Both are cheap here. One draw per hop, per item,
     so there is no reason to use a predictable generator for the one thing
     the stem is keeping secret.
     """

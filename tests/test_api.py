@@ -61,7 +61,7 @@ class TestFeeEstimate:
 
     def test_next_block_reflects_the_real_cutoff_when_block_is_full(self):
         """When the mempool overflows one block, next_block must match
-        whatever block.assemble() itself would actually require -- this
+        whatever block.assemble() itself would actually require, this
         reuses assemble() directly rather than reimplementing its packing
         logic, so the two can never drift apart."""
         import block as block_mod
@@ -106,7 +106,7 @@ class TestPeersPage:
         pool = peerpool_mod.PeerPool(host="0.0.0.0", port=1234)
         pool.add("1.2.3.4:9000")
         pool.update_info("1.2.3.4:9000", height=5, wallet="peer.wallet.addr", version="0.2.0")
-        pool.add("5.6.7.8:9000")  # no update_info -- height/wallet/version unknown
+        pool.add("5.6.7.8:9000")  # no update_info, height/wallet/version unknown
         pool.add("9.9.9.9:9000")
         app = api.create_private_app(node, pool)
         return app.test_client()
@@ -128,7 +128,7 @@ class TestPeersPage:
 
 
 class TestUpdateNav:
-    """Smoke test the nav bar's update-available link for each severity --
+    """Smoke test the nav bar's update-available link for each severity,
     catches a template/Jinja mismatch in the severity->label/color lookup."""
 
     def _render_page(self, severity):
@@ -144,7 +144,7 @@ class TestUpdateNav:
 
     def test_no_link_when_no_update(self):
         # Checks for the update link's own rendered element, not a loose
-        # "update" substring -- the page also renders a randomly generated
+        # "update" substring, the page also renders a randomly generated
         # wallet address (dot-joined words from a wordlist), which can
         # coincidentally contain "update" and has nothing to do with what
         # this test covers. The stylesheet always defines .version-alert

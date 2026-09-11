@@ -37,7 +37,7 @@ else:
 class SingleInstanceLock:
     """Holds an exclusive, non-blocking OS lock on a small file for as
     long as this process is alive. `acquire()` returns False rather than
-    raising if another live instance already holds it -- that's the
+    raising if another live instance already holds it, that's the
     normal, expected outcome, not an error."""
 
     def __init__(self, lock_path):
@@ -67,7 +67,7 @@ class SingleInstanceLock:
         except Exception:
             # Any unexpected failure acquiring the lock (permissions,
             # missing syscall, etc.) should not be treated as "someone
-            # else is running" -- fail open rather than blocking a
+            # else is running", fail open rather than blocking a
             # genuine normal start over a filesystem quirk.
             log.warning("[singleton] lock check failed unexpectedly, proceeding without it", exc_info=True)
             try:
@@ -78,7 +78,7 @@ class SingleInstanceLock:
 
         # Lock acquired: record our identity for diagnostics, then keep
         # the handle open (and referenced on self) for the life of the
-        # process. Do NOT close it -- closing releases the lock.
+        # process. Do NOT close it, closing releases the lock.
         fh.seek(0)
         fh.truncate()
         fh.write(str(os.getpid()) + "\n")
@@ -88,7 +88,7 @@ class SingleInstanceLock:
 
     def holder_pid(self):
         """Best-effort PID of whoever currently holds (or last held) the
-        lock file, purely for a friendlier message -- never used to make
+        lock file, purely for a friendlier message. Never used to make
         the accept/reject decision itself."""
         try:
             with open(self.lock_path) as f:

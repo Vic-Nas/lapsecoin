@@ -103,7 +103,7 @@ class TestBlockHash:
 
 
 # ---------------------------------------------------------------------------
-# 3. validate -- hash integrity
+# 3. validate, hash integrity
 # ---------------------------------------------------------------------------
 
 class TestValidateHash:
@@ -130,7 +130,7 @@ class TestValidateHash:
 
 
 # ---------------------------------------------------------------------------
-# 4. validate -- parent linkage
+# 4. validate, parent linkage
 # ---------------------------------------------------------------------------
 
 class TestValidateParent:
@@ -156,7 +156,7 @@ class TestValidateParent:
 
 
 # ---------------------------------------------------------------------------
-# 5. validate -- timestamp
+# 5. validate, timestamp
 # ---------------------------------------------------------------------------
 
 class TestValidateTimestamp:
@@ -178,14 +178,14 @@ class TestValidateTimestamp:
 
 
 # ---------------------------------------------------------------------------
-# 6. validate -- VDF proof (whitepaper: chain is its own clock)
+# 6. validate, VDF proof (whitepaper: chain is its own clock)
 # ---------------------------------------------------------------------------
 
 class TestValidateVDF:
     def test_vdf_verified_for_height_gt_zero(self):
         g = genesis()
         b = make_block(1, g["hash"], [])
-        # VDF mock returns True by default -- should pass
+        # VDF mock returns True by default, should pass
         ok, err = block_mod.validate(b, fresh_state(), [g])
         assert ok is True, err
 
@@ -281,7 +281,7 @@ class TestValidateVDF:
 
     def test_genesis_skips_vdf_check(self):
         g = genesis()
-        # Genesis has vdf_output=None -- should still pass
+        # Genesis has vdf_output=None, should still pass
         ok, err = block_mod.validate(g, fresh_state(), [])
         assert ok is True, err
 
@@ -296,7 +296,7 @@ class TestValidateVDF:
 
 
 # ---------------------------------------------------------------------------
-# 7. validate -- transaction application (no consensus-level ordering)
+# 7. validate, transaction application (no consensus-level ordering)
 # ---------------------------------------------------------------------------
 
 class TestValidateTransactions:
@@ -525,7 +525,7 @@ class TestRaceChartBuilderColors:
 
     def test_top_3_builders_get_distinct_colors(self):
         import api as api_mod
-        # builder 0 wins 3 blocks, 1 wins 2, 2 wins 1 -- all fit in the top 3.
+        # builder 0 wins 3 blocks, 1 wins 2, 2 wins 1, all fit in the top 3.
         chain = self._chain([0, 1, 0, 1, 0, 2])
         race = block_mod.race_odds(chain, own_seconds=None)
         chart = api_mod._race_chart(race)
@@ -538,7 +538,7 @@ class TestRaceChartBuilderColors:
 
     def test_fourth_and_later_builders_fold_into_other(self):
         import api as api_mod
-        # Four distinct builders, one block each -- a 4th generated color
+        # Four distinct builders, one block each, a 4th generated color
         # would fail the normal-vision floor (see dataviz palette check),
         # so the 4th must share the "other" color instead.
         chain = self._chain([0, 1, 2, 3])
@@ -555,7 +555,7 @@ class TestRaceChartBuilderColors:
 
     def test_ranking_by_frequency_not_first_seen(self):
         """The most-active builder gets slot 1 even if it appears later in
-        the window -- ranking is by count, not by first appearance."""
+        the window, ranking is by count, not by first appearance."""
         import api as api_mod
         # builder 1 appears once first, then builder 0 dominates with 4 blocks.
         chain = self._chain([1, 0, 0, 0, 0])
@@ -585,7 +585,7 @@ class TestRaceOddsNoOutlierBand:
         chain = [genesis()]
         for h in range(1, 4):
             chain.append(make_block(h, chain[-1]["hash"], [], timestamp_offset=150))
-        # One wildly long interval -- 10x the others.
+        # One wildly long interval, 10x the others.
         chain.append(make_block(4, chain[-1]["hash"], [], timestamp_offset=1500))
         race = block_mod.race_odds(chain, own_seconds=100.0)
         assert len(race["window"]) == 4
@@ -603,7 +603,7 @@ class TestRaceChartAxisZoom:
     def _chain(self, intervals):
         """Build a chain whose actual block-to-block intervals match
         `intervals` exactly. make_block's timestamp_offset is added on top
-        of a fixed height*120 base, so it isn't itself the interval --
+        of a fixed height*120 base, so it isn't itself the interval,
         convert desired intervals to the offsets that produce them."""
         chain = [genesis()]
         cum_offset = 0
