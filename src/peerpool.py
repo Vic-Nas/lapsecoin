@@ -157,8 +157,14 @@ class PeerPool:
             for p in stale:
                 del self._peers[p]
                 self._info.pop(p, None)
+            remaining = len(self._peers)
         if stale:
-            log.debug("[peer] evicted %d stale peer(s)", len(stale))
+            # Not debug. Losing peers is the thing an operator is trying to
+            # explain when their node goes quiet, and at debug level the
+            # only visible symptom was the peer count silently falling,
+            # with nothing saying it had happened or to whom.
+            log.info("[peer] dropped %d peer(s) not heard from in %ds: %s  (pool=%d)",
+                     len(stale), int(STALE_SECONDS), ", ".join(stale), remaining)
 
     # ---- Queries ----
 

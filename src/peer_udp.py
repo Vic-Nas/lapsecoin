@@ -175,6 +175,20 @@ CHUNK_ACK_MAX_ROUNDS = 4
 # retransmit round, three hundred times the sleep it would save.
 FANOUT_CONCURRENCY = 4
 
+# How many sends may be waiting on that pool before new ones are dropped.
+#
+# ThreadPoolExecutor queues into a SimpleQueue, which has no bound at all,
+# so without this a burst just accumulates, each entry holding a whole
+# block. Memory is the lesser problem: a send that leaves the queue thirty
+# seconds late is spending bandwidth on a block the network already has,
+# so queuing it is worse than dropping it. Gossip is best-effort and our
+# own blocks have a retry above this (Node._retry_unconfirmed_spreads),
+# which is what makes dropping the right answer rather than a compromise.
+#
+# Sized at roughly two full fan-outs at the peer cap, so a node is only
+# ever dropping when it is genuinely more than a block behind on sending.
+FANOUT_PENDING_MAX = 256
+
 # Header: 1 (type) + 4 (msg_id) + 2 (chunk_idx) + 2 (chunk_total) = 9 bytes
 HDR_FMT  = "!BIHh"  # chunk_total is signed, but MT_ACK is what actually
 # distinguishes an ack datagram (see _handle_ack). It's just an ordinary
@@ -520,6 +534,7 @@ class UDPTransport:
         # the reading of everything arriving while it goes out.
         self._fanout    = ThreadPoolExecutor(max_workers=FANOUT_CONCURRENCY,
                                              thread_name_prefix="udp-fan")
+        self._fanout_slots = threading.BoundedSemaphore(FANOUT_PENDING_MAX)
         self._on_punch_go   = None  # set by discovery after init
         self._get_tip_fn    = None  # set by main after node init
         self._on_peer_hint  = None  # set by discovery; called when PING includes "from"
@@ -658,8 +673,16 @@ class UDPTransport:
         # latency-sensitive path in the system, ten sequential hops of it,
         # still blocking that loop for the whole pacing.
         for target in targets:
-            self._fanout.submit(self._send_chunked, MT_BLOCK, msg_id,
-                                payload, target)
+            if not self._fanout_slots.acquire(blocking=False):
+                log.warning("[udp] send queue full, dropping block to %s "
+                            "(it will be re-sent if nobody echoes it back)",
+                            target)
+                continue
+            try:
+                self._fanout.submit(self._fanout_send, MT_BLOCK, msg_id,
+                                    payload, target)
+            except RuntimeError:
+                self._fanout_slots.release()   # pool already shut down
 
     def send_tx(self, tx: dict, peers=None, stemming: bool = False):
         """Send a tx to `peers` (default: all). stemming as in send_block."""
@@ -1118,6 +1141,13 @@ class UDPTransport:
 
         if total > 1:
             self._executor.submit(self._retransmit_until_acked, target, msg_id, total)
+
+    def _fanout_send(self, msg_type, msg_id, payload, target):
+        """One queued fan-out send, freeing its slot however it ends."""
+        try:
+            self._send_chunked(msg_type, msg_id, payload, target)
+        finally:
+            self._fanout_slots.release()
 
     def _retransmit_until_acked(self, target: tuple, msg_id: int, total: int):
         """Resend only the chunks a peer hasn't ACKed yet, a bounded number

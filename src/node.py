@@ -605,9 +605,18 @@ class Node:
         self._sync_if_triggered()
         cs = self.cs   # local alias; can change under sync
         pruned = self.mempool.prune_stale(cs.state)
+        peers = self.pool.count()
         log.info("[vdf] starting height=%d  tip=%s  peers=%d  mempool=%d  pruned=%d",
                  cs.height + 1, cs.tip["hash"][:12],
-                 self.pool.count(), self.mempool.size(), len(pruned))
+                 peers, self.mempool.size(), len(pruned))
+        if peers == 0:
+            # Distinct from peers=0 in the line above, which reads as one
+            # number among several. A node with no peers is building a
+            # chain nobody will ever see, and it is worth saying that
+            # outright every cycle it stays true rather than leaving an
+            # operator to infer it.
+            log.warning("[vdf] no peers: building alone, this chain reaches "
+                        "nobody until one is found")
         self.status_line = f"computing VDF for block {cs.height + 1}"
 
         # Run VDF in a background thread so the node loop stays responsive
@@ -1043,10 +1052,14 @@ class Node:
         # compared everything we were ever going to.
         self.open_draw(blk["height"])
 
-        log.info("[commit] height=%d  hash=%s  tx=%d  builder=%s",
-                 blk["height"], blk["hash"][:12], len(blk["transactions"]),
-                 (blk.get("builder") or "")[:24])
+        # Whether this node won the height is the one thing an operator
+        # actually watches for, and reading it off `builder` meant
+        # recognising your own address in a truncated string.
         won = blk.get("builder") == self.addr
+        log.info("[commit] height=%d  %s  hash=%s  tx=%d  builder=%s",
+                 blk["height"], "WON by us" if won else "built by a peer",
+                 blk["hash"][:12], len(blk["transactions"]),
+                 (blk.get("builder") or "")[:24])
         self.status_line = f"block {blk['height']} {'won' if won else 'received'}"
 
     # ------------------------------------------------------------------
