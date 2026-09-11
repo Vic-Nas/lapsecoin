@@ -899,6 +899,11 @@ class TestRunCycleSync:
         # earns isn't repeated on every loop tick.
         monkeypatch.setattr(node, "_silence_threshold", lambda: 5.0)
         node._last_block_seen = time.monotonic() - 60
+        # Relative, like _last_block_seen above. Left at its initial 0.0 it
+        # reads as "long ago" only once time.monotonic() has climbed past
+        # the threshold, which on Linux means once the machine has been up
+        # that long, so the test would quietly depend on uptime.
+        node._last_silence_poll = time.monotonic() - 60
         pool.snapshot.return_value = [
             ("low:1", 0, True, 3, "", "", "", None),
             ("high:1", 0, True, 99, "", "", "", None),
@@ -1629,6 +1634,22 @@ class TestJudgementCache:
 # 26. What the node says it is doing
 # ---------------------------------------------------------------------------
 
+def _make_silent(node):
+    """Put the node past its silence threshold, relative to the clock.
+
+    Setting the timestamps to 0.0 instead reads as "long ago" only if
+    time.monotonic() is already larger than the threshold, and on Linux
+    that clock counts from boot: it says 30,000 on a workstation and 45 on
+    a CI runner that just started. So the same test passed on one machine
+    and failed on the other, which is the kind of green that is worse than
+    a red one.
+    """
+    now = time.monotonic()
+    stale = now - node._silence_threshold() - 1
+    node._last_block_seen = stale
+    node._last_silence_poll = stale
+
+
 class TestStatusLine:
     def test_syncing_says_so_instead_of_still_claiming_vdf(self, node_env):
         """A sync runs for many seconds on the loop thread. While it did not
@@ -1636,7 +1657,7 @@ class TestStatusLine:
         identical from outside, which is exactly what an operator checks."""
         node, *_, syncer, pool, _q = node_env
         pool.random.return_value = "1.2.3.4:8333"
-        node._last_block_seen = 0.0          # force the silence trigger
+        _make_silent(node)
         node.status_line = "computing VDF for block 5"
 
         seen = []
@@ -1657,7 +1678,7 @@ class TestStatusLine:
         screen in place of what the node is actually doing."""
         node, *_, syncer, pool, _q = node_env
         pool.random.return_value = "1.2.3.4:8333"
-        node._last_block_seen = 0.0
+        _make_silent(node)
         syncer.check_and_sync.return_value = False
         node.status_line = "computing VDF for block 5"
 
