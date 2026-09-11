@@ -5,6 +5,7 @@ import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "src"))
 
 import argparse
+import collections
 import getpass
 import logging
 import logging.handlers
@@ -54,6 +55,18 @@ LOCK_FILE = "lapsecoin.lock"
 LOG_FILE_SIZE_LIMIT = 10 * 1024 * 1024  # 10 MB
 LOG_FILE_BACKUPS = 4
 
+# A second, much smaller file: just the newest LOG_TAIL_LINES lines,
+# newest at the top. LOG_FILE is the complete record and has to stay
+# oldest-first and append-only, since rewriting a growing multi-megabyte
+# file to put new lines first would mean re-writing everything after
+# them, on every single line logged, an ever-growing cost for no
+# functional gain. This file is kept deliberately small instead, so a
+# full rewrite on every line is cheap regardless of how long the node has
+# been running, and that's what actually buys "open it and see what's
+# happening now without scrolling."
+LOG_TAIL_FILE = "lapsecoin.log.latest"
+LOG_TAIL_LINES = 300
+
 # The Windows build is console=False (no console window for the default GUI
 # double-click experience). That leaves two things to handle before any
 # logging or output happens: sys.stdout/stderr can be None for a windowed
@@ -83,7 +96,33 @@ if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 0:
     # short-lived previous run's tail would still be sitting at the top of
     # the file the next run opens.
     _log_file_handler.doRollover()
-_log_handlers = [_log_file_handler]
+class _NewestFirstTailHandler(logging.Handler):
+    """Keeps LOG_TAIL_FILE as just the newest LOG_TAIL_LINES lines,
+    newest at the top, rewritten in full on every record.
+
+    A deque(maxlen=...) does the actual capping: once full, appendleft
+    silently drops whatever falls off the far end, which is the oldest
+    line, exactly once per new one arriving, no separate trim step. The
+    file itself is never read back to figure out what to keep, this
+    handler's own deque is the only source of truth for its contents.
+    """
+
+    def __init__(self, path, max_lines):
+        super().__init__()
+        self.path = path
+        self.lines = collections.deque(maxlen=max_lines)
+
+    def emit(self, record):
+        try:
+            self.lines.appendleft(self.format(record))
+            with open(self.path, "w") as f:
+                f.write("\n".join(self.lines))
+                f.write("\n")
+        except Exception:
+            self.handleError(record)
+
+
+_log_handlers = [_log_file_handler, _NewestFirstTailHandler(LOG_TAIL_FILE, LOG_TAIL_LINES)]
 if sys.stderr is not None:
     _log_handlers.append(logging.StreamHandler())
 
