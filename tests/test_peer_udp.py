@@ -488,3 +488,32 @@ def test_something_within_the_ceiling_inflates_fine():
     import zlib
     raw = b"x" * 10_000
     assert peer_udp._inflate(zlib.compress(raw)) == raw
+
+
+def test_an_old_peer_answering_our_ping_never_completes_the_handshake():
+    """Every way a peer gets into the pool (the on-disk cache, the DHT, a
+    peer hint) goes through enqueue_candidate and then a ping, and the only
+    pool.add in discovery is behind a successful one. So a stale address
+    surviving a restart in the cache is refused by the same floor as
+    anything else, and never becomes a peer again."""
+    import threading
+    import time
+
+    udp = _make_transport(MagicMock())
+    udp._send_one = MagicMock()
+
+    def answer(with_proto):
+        def run():
+            time.sleep(0.05)
+            msg_id = list(udp._pong_events)[0]
+            data = {"observed": "1.2.3.4:8333"}
+            if with_proto:
+                data["proto"] = peer_udp.PROTOCOL_VERSION
+            udp._dispatch(peer_udp.MT_PONG, msg_id, data, ("1.2.3.4", 8333))
+        threading.Thread(target=run, daemon=True).start()
+
+    answer(with_proto=False)
+    assert udp.ping("1.2.3.4:8333", timeout=1.0) is None
+
+    answer(with_proto=True)
+    assert udp.ping("1.2.3.4:8333", timeout=1.0) == "1.2.3.4:8333"
