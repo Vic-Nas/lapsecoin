@@ -388,8 +388,19 @@ def _race_chart(race):
     for _, _, builder in rows:
         if builder:
             builder_counts[builder] = builder_counts.get(builder, 0) + 1
-    top_builders = sorted(builder_counts, key=builder_counts.get, reverse=True)[:3]
-    color_by_builder = {b: _BUILDER_COLOR_SLOTS[i] for i, b in enumerate(top_builders)}
+    # Which three get a color is by block count, but ties break on the
+    # address so the same three are chosen every time rather than by
+    # whatever order the chain happened to put equal builders in.
+    top_builders = sorted(builder_counts,
+                          key=lambda b: (-builder_counts[b], b))[:3]
+    # Which color each one gets is by address, not by rank. Assigning by
+    # rank meant two builders one block apart swapped colors the moment
+    # they swapped places, which is every time either of them wins, so the
+    # chart appeared to recolor itself constantly while nothing about who
+    # built what had changed. Sorting the chosen three by address instead
+    # makes a builder's color depend only on which builders are on screen.
+    color_by_builder = {b: _BUILDER_COLOR_SLOTS[i]
+                        for i, b in enumerate(sorted(top_builders))}
 
     points = [{"x": round(x_at(idx), 1), "y": round(y_at(seconds), 1),
                "height": h, "seconds": seconds,

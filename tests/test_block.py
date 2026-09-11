@@ -531,10 +531,13 @@ class TestRaceChartBuilderColors:
         chart = api_mod._race_chart(race)
 
         colors_by_builder = {p["builder"]: p["color"] for p in chart["points"]}
-        assert colors_by_builder[address(0)] == "var(--series-1)"
-        assert colors_by_builder[address(1)] == "var(--series-2)"
-        assert colors_by_builder[address(2)] == "var(--series-3)"
-        assert {e["label"] for e in chart["legend"]} == {address(0), address(1), address(2)}
+        picked = {address(0), address(1), address(2)}
+        # Distinct colors, one each. Which slot a builder gets is by address
+        # rather than by rank (see TestRaceChartColorStability), so this
+        # asserts that they differ, not which is which.
+        assert set(colors_by_builder) == picked
+        assert len(set(colors_by_builder.values())) == 3
+        assert {e["label"] for e in chart["legend"]} == picked
 
     def test_fourth_and_later_builders_fold_into_other(self):
         import api as api_mod
@@ -554,17 +557,19 @@ class TestRaceChartBuilderColors:
         assert other_entries[0]["count"] == 1
 
     def test_ranking_by_frequency_not_first_seen(self):
-        """The most-active builder gets slot 1 even if it appears later in
-        the window, ranking is by count, not by first appearance."""
+        """The most-active builder leads the legend even if it appears later
+        in the window: the ordering is by count, not by first appearance.
+
+        Read off the legend rather than the colors, which no longer encode
+        rank precisely so that they stop moving when rank does."""
         import api as api_mod
         # builder 1 appears once first, then builder 0 dominates with 4 blocks.
         chain = self._chain([1, 0, 0, 0, 0])
         race = block_mod.race_odds(chain, own_seconds=None)
         chart = api_mod._race_chart(race)
 
-        colors_by_builder = {p["builder"]: p["color"] for p in chart["points"]}
-        assert colors_by_builder[address(0)] == "var(--series-1)"
-        assert colors_by_builder[address(1)] == "var(--series-2)"
+        assert [e["label"] for e in chart["legend"]] == [address(0), address(1)]
+        assert [e["count"] for e in chart["legend"]] == [4, 1]
 
 
 class TestRaceOddsNoOutlierBand:
@@ -670,3 +675,58 @@ class TestRaceChartAxisZoom:
         race = block_mod.race_odds(chain, own_seconds=None)
         chart = api_mod._race_chart(race)
         assert all(not p["clipped"] for p in chart["points"])
+
+
+class TestRaceChartColorStability:
+    """A builder's color must not move because someone else won a block.
+
+    The chart re-renders every few seconds. Assigning colors by rank meant
+    two builders one block apart swapped colors the moment they swapped
+    places, so the chart appeared to recolor itself while nothing about who
+    built what had changed.
+    """
+
+    def _colors(self, counts):
+        import api as api_mod
+        rows, h = [], 0
+        for builder, n in counts.items():
+            for _ in range(n):
+                h += 1
+                rows.append((h, 120.0, builder))
+        chart = api_mod._race_chart(
+            {"window": rows, "median": 120.0, "own_seconds": None, "odds_pct": None})
+        return {e["label"]: e["color"] for e in chart["legend"] if e["label"]}
+
+    def test_colors_hold_when_the_lead_changes_hands(self):
+        leading_alice = self._colors({"alice": 5, "bob": 4, "carol": 3})
+        leading_bob   = self._colors({"alice": 4, "bob": 5, "carol": 3})
+        leading_carol = self._colors({"alice": 3, "bob": 4, "carol": 5})
+
+        assert leading_alice == leading_bob == leading_carol
+
+    def test_colors_hold_when_counts_tie(self):
+        """Ties used to break on whatever order the chain put them in, so
+        equal builders could swap on any refresh with nothing changing."""
+        assert (self._colors({"alice": 4, "bob": 4, "carol": 4})
+                == self._colors({"carol": 4, "alice": 4, "bob": 4}))
+
+    def test_a_newcomer_does_not_disturb_those_it_sorts_after(self):
+        before = self._colors({"alice": 5, "bob": 4, "carol": 3})
+        after  = self._colors({"alice": 5, "bob": 4, "dave": 3})
+
+        assert before["alice"] == after["alice"]
+        assert before["bob"] == after["bob"]
+
+    def test_the_legend_still_leads_with_the_most_dominant(self):
+        """Color is by address, order is by block count: they are separate
+        questions and the legend answers the more useful one."""
+        import api as api_mod
+        rows, h = [], 0
+        for builder, n in {"alice": 2, "bob": 7, "carol": 4}.items():
+            for _ in range(n):
+                h += 1
+                rows.append((h, 120.0, builder))
+        chart = api_mod._race_chart(
+            {"window": rows, "median": 120.0, "own_seconds": None, "odds_pct": None})
+
+        assert [e["label"] for e in chart["legend"]] == ["bob", "carol", "alice"]
