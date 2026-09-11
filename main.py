@@ -7,6 +7,7 @@ _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 
 import argparse
 import getpass
 import logging
+import logging.handlers
 import os
 import queue
 import sys
@@ -37,6 +38,22 @@ from version import LOCAL_VERSION
 LOG_FILE = "lapsecoin.log"
 LOCK_FILE = "lapsecoin.lock"
 
+# LOG_FILE is capped at this size, past which it rolls into LOG_FILE.1,
+# pushing .1 to .2 and so on up to LOG_FILE_BACKUPS, oldest dropped. Two
+# things need bounding here, not one: a log that just keeps growing across
+# restarts buries the current run under every previous one, and a single
+# run left up for weeks (the normal, correct thing to do with a node)
+# would otherwise grow LOG_FILE forever with nothing capping it at all.
+# RotatingFileHandler's own maxBytes check handles the second; forcing one
+# rollover at every startup, below, handles the first, so LOG_FILE always
+# opens on the current run whether that run just started or has been up
+# for a month.
+#
+# Total disk this can ever hold is bounded: at most
+# LOG_FILE_SIZE_LIMIT * (LOG_FILE_BACKUPS + 1).
+LOG_FILE_SIZE_LIMIT = 10 * 1024 * 1024  # 10 MB
+LOG_FILE_BACKUPS = 4
+
 # The Windows build is console=False (no console window for the default GUI
 # double-click experience). That leaves two things to handle before any
 # logging or output happens: sys.stdout/stderr can be None for a windowed
@@ -56,7 +73,17 @@ if sys.platform.startswith("win"):
     except Exception:
         pass  # no parent console (double-clicked) or attach failed either way
 
-_log_handlers = [logging.FileHandler(LOG_FILE)]
+_log_file_handler = logging.handlers.RotatingFileHandler(
+    LOG_FILE, maxBytes=LOG_FILE_SIZE_LIMIT, backupCount=LOG_FILE_BACKUPS)
+if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > 0:
+    # Force a rollover so this run starts LOG_FILE fresh even if the last
+    # run never grew it anywhere near maxBytes, which is the ordinary
+    # case: most runs end well short of 10MB. Without this, LOG_FILE would
+    # keep appending across restarts and only ever roll on size, so a
+    # short-lived previous run's tail would still be sitting at the top of
+    # the file the next run opens.
+    _log_file_handler.doRollover()
+_log_handlers = [_log_file_handler]
 if sys.stderr is not None:
     _log_handlers.append(logging.StreamHandler())
 
