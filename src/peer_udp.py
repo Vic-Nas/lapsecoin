@@ -83,7 +83,6 @@ log = logging.getLogger("ec.udp")
 MT_PING      = 0x01
 MT_PONG      = 0x02
 MT_PEERS     = 0x03
-MT_BLOCK     = 0x04
 MT_TX        = 0x05
 MT_GETSYNC   = 0x06
 MT_SYNC      = 0x07
@@ -92,11 +91,29 @@ MT_PUNCH_REQ = 0x09
 MT_PUNCH_GO  = 0x0A
 MT_GETINFO   = 0x0B   # request peer tip info (height + hash)
 MT_INFO      = 0x0C   # response: {"height": N, "tip_hash": "...", "wallet": "..."}
-# A block whose payload is zlib'd, and nothing else: it decompresses to
-# exactly what MT_BLOCK carries and is handled as one from that point.
-# A separate type rather than a flag so a node that predates it ignores
-# an unreadable datagram cleanly instead of failing to decode every block.
-MT_BLOCK_Z   = 0x0D
+# Blocks, zlib'd. 0x04 was the uncompressed form and is retired rather
+# than kept alongside: a datagram still carrying it matches no branch and
+# is ignored, which is the point. Supporting both indefinitely is how a
+# codebase accumulates a path per format change forever, and the protocol
+# floor below is what makes retiring one safe instead of silent.
+MT_BLOCK     = 0x0D
+
+# Level 1 rather than 6: on the wire this competes with pacing, not disk.
+# It reaches within about a point of the ratio at a third of the CPU, and
+# every hop pays the decompress, so the cheaper end is the right one here.
+BLOCK_COMPRESS_LEVEL = 1
+
+# Protocol floor. Same job genesis_hash already does, one step along: that
+# one refuses a peer on a different network, this one refuses a peer too
+# old to speak this network's current wire format. Having it in the
+# handshake is what lets a format be replaced instead of accumulated,
+# because the check lives in one place rather than once per message type.
+#
+# Bump both when the wire changes incompatibly, and delete the old format
+# in the same commit. A peer below the floor is not partially supported;
+# it is not peered with, and it needs to update.
+PROTOCOL_VERSION     = 2
+MIN_PROTOCOL_VERSION = 2
 
 MAX_CHUNK_SIZE   = 1400   # bytes, safe below MTU
 RECV_TIMEOUT     = 2.0    # seconds select/recvfrom timeout
@@ -329,8 +346,20 @@ def probe_lan_ports(genesis_hash: str, wait: float = 1.5,
     return found
 
 
+def _protocol_ok(data: dict) -> bool:
+    """Whether a handshake came from a peer we can actually talk to.
+
+    A peer too old to carry the field at all reads as 0, which is the
+    correct answer for it: absent means it predates the floor.
+    """
+    try:
+        return int(data.get("proto", 0)) >= MIN_PROTOCOL_VERSION
+    except (TypeError, ValueError):
+        return False
+
+
 def _inflate(payload: bytes):
-    """Decompress an MT_BLOCK_Z payload, or None if it isn't usable.
+    """Decompress an MT_BLOCK payload, or None if it isn't usable.
 
     Bounded on purpose. A message is already capped at MAX_CHUNK_TOTAL
     chunks on the wire, but compression breaks the link between what an
@@ -566,7 +595,7 @@ class UDPTransport:
         ev = threading.Event()
         with self._pong_lock:
             self._pong_events[msg_id] = ev
-        payload = {"genesis": self.genesis_hash}
+        payload = {"genesis": self.genesis_hash, "proto": PROTOCOL_VERSION}
         if self.our_external_addr:
             payload["from"] = self.our_external_addr
         self._send_one(MT_PING, msg_id, payload, target)
@@ -605,8 +634,9 @@ class UDPTransport:
             return
         log.debug("[udp] send_block height=%s to %d peers stem=%s",
                   block.get("height"), len(peers), stemming)
-        payload = _encode({"genesis": self.genesis_hash, "block": block,
-                           "stemming": stemming})
+        payload = zlib.compress(
+            _encode({"genesis": self.genesis_hash, "block": block,
+                     "stemming": stemming}), BLOCK_COMPRESS_LEVEL)
         msg_id = self._new_msg_id()
         self._mark_seen(msg_id)
         targets = [self._addr_tuple(a) for a in peers]
@@ -747,7 +777,7 @@ class UDPTransport:
         No relay needed; both nodes do this simultaneously when they
         discover each other via DHT."""
         target = self._addr_tuple(target_addr)
-        payload = {"genesis": self.genesis_hash}
+        payload = {"genesis": self.genesis_hash, "proto": PROTOCOL_VERSION}
         if self.our_external_addr:
             payload["from"] = self.our_external_addr
         for _ in range(8):
@@ -852,11 +882,10 @@ class UDPTransport:
         if complete is None:
             return
 
-        if msg_type == MT_BLOCK_Z:
+        if msg_type == MT_BLOCK:
             complete = _inflate(complete)
             if complete is None:
                 return
-            msg_type = MT_BLOCK      # identical in every other respect
 
         try:
             parsed = _decode(complete)
@@ -876,10 +905,15 @@ class UDPTransport:
         if msg_type == MT_PING:
             peer_genesis = data.get("genesis")
             if peer_genesis == self.genesis_hash:
+                if not _protocol_ok(data):
+                    log.debug("[udp] refused %s: protocol %s below floor %d",
+                              sender_addr, data.get("proto", 0), MIN_PROTOCOL_VERSION)
+                    return
                 self._pool.touch(sender_addr)
                 self._send_one(MT_PONG, msg_id,
                                {"observed": sender_addr,
-                                "genesis": self.genesis_hash},
+                                "genesis": self.genesis_hash,
+                                "proto": PROTOCOL_VERSION},
                                sender)
                 announced = data.get("from", "")
                 if announced and self._on_peer_hint:
@@ -894,6 +928,10 @@ class UDPTransport:
                     self._pool.add(sender_addr, allow_private=True)
 
         elif msg_type == MT_PONG:
+            if not _protocol_ok(data):
+                log.debug("[udp] ignoring PONG from %s: protocol %s below floor %d",
+                          sender_addr, data.get("proto", 0), MIN_PROTOCOL_VERSION)
+                return
             observed = data.get("observed", "")
             with self._pong_lock:
                 matched = msg_id in self._pong_events

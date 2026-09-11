@@ -121,7 +121,9 @@ def test_ping_from_lan_source_admits_to_pool():
     udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
                        on_tx=MagicMock(), on_peers=MagicMock(), pool=pool)
     udp._send_one = MagicMock()
-    udp._dispatch(MT_PING, 1, {"genesis": udp.genesis_hash}, ("192.168.1.42", 8333))
+    udp._dispatch(MT_PING, 1, {"genesis": udp.genesis_hash,
+                           "proto": peer_udp.PROTOCOL_VERSION},
+                  ("192.168.1.42", 8333))
     pool.add.assert_called_once_with("192.168.1.42:8333", allow_private=True)
 
 
@@ -129,7 +131,9 @@ def test_pong_from_lan_source_admits_to_pool():
     pool = MagicMock()
     udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
                        on_tx=MagicMock(), on_peers=MagicMock(), pool=pool)
-    udp._dispatch(MT_PONG, 2, {"observed": "192.168.1.42:8333"}, ("192.168.1.42", 8333))
+    udp._dispatch(MT_PONG, 2, {"observed": "192.168.1.42:8333",
+                           "proto": peer_udp.PROTOCOL_VERSION},
+                  ("192.168.1.42", 8333))
     pool.add.assert_called_once_with("192.168.1.42:8333", allow_private=True)
 
 
@@ -140,7 +144,9 @@ def test_ping_from_public_source_does_not_bypass_pool_validation():
     udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
                        on_tx=MagicMock(), on_peers=MagicMock(), pool=pool)
     udp._send_one = MagicMock()
-    udp._dispatch(MT_PING, 3, {"genesis": udp.genesis_hash}, ("8.8.8.8", 8333))
+    udp._dispatch(MT_PING, 3, {"genesis": udp.genesis_hash,
+                           "proto": peer_udp.PROTOCOL_VERSION},
+                  ("8.8.8.8", 8333))
     pool.add.assert_not_called()
 
 
@@ -149,7 +155,9 @@ def test_ping_from_loopback_does_not_self_admit():
     udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
                        on_tx=MagicMock(), on_peers=MagicMock(), pool=pool)
     udp._send_one = MagicMock()
-    udp._dispatch(MT_PING, 4, {"genesis": udp.genesis_hash}, ("127.0.0.1", 8333))
+    udp._dispatch(MT_PING, 4, {"genesis": udp.genesis_hash,
+                           "proto": peer_udp.PROTOCOL_VERSION},
+                  ("127.0.0.1", 8333))
     pool.add.assert_not_called()
 
 
@@ -162,7 +170,9 @@ def test_ping_from_own_private_ip_does_not_self_admit():
                        on_tx=MagicMock(), on_peers=MagicMock(), pool=pool)
     udp._send_one = MagicMock()
     udp._local_ips = {"172.31.17.210"}
-    udp._dispatch(MT_PING, 5, {"genesis": udp.genesis_hash}, ("172.31.17.210", 9999))
+    udp._dispatch(MT_PING, 5, {"genesis": udp.genesis_hash,
+                           "proto": peer_udp.PROTOCOL_VERSION},
+                  ("172.31.17.210", 9999))
     pool.add.assert_not_called()
 
 
@@ -408,9 +418,9 @@ def test_start_falls_back_to_next_free_port_on_collision():
 # Compressed blocks (MT_BLOCK_Z)
 # ---------------------------------------------------------------------------
 
-def test_a_compressed_block_arrives_the_same_as_a_plain_one():
-    """MT_BLOCK_Z carries exactly what MT_BLOCK does, just deflated, so it
-    has to reach on_block indistinguishable from the plain form."""
+def test_a_block_on_the_wire_is_compressed():
+    """There is one block format, so a datagram carrying the retired
+    uncompressed one matches nothing and is simply not a block any more."""
     import zlib
     udp = _make_transport(MagicMock())
     blk = {"height": 7, "hash": "ab" * 32}
@@ -418,10 +428,44 @@ def test_a_compressed_block_arrives_the_same_as_a_plain_one():
                                 "stemming": False})
 
     udp._handle_datagram(
-        peer_udp._pack(peer_udp.MT_BLOCK_Z, 4242, 0, 1, zlib.compress(payload)),
+        peer_udp._pack(peer_udp.MT_BLOCK, 4242, 0, 1, zlib.compress(payload)),
         ("5.6.7.8", 9999))
 
     udp._on_block.assert_called_once_with(blk, "5.6.7.8:9999", False)
+
+
+def test_the_retired_uncompressed_block_type_is_ignored():
+    udp = _make_transport(MagicMock())
+    blk = {"height": 7, "hash": "ab" * 32}
+    payload = peer_udp._encode({"genesis": udp.genesis_hash, "block": blk,
+                                "stemming": False})
+
+    udp._handle_datagram(peer_udp._pack(0x04, 777, 0, 1, payload),
+                         ("5.6.7.8", 9999))
+
+    udp._on_block.assert_not_called()
+
+
+def test_a_peer_below_the_protocol_floor_is_not_ponged():
+    """Refused in the handshake, the same place and the same way a peer on
+    another network already is."""
+    udp = _make_transport(MagicMock())
+    udp._send_one = MagicMock()
+
+    udp._dispatch(peer_udp.MT_PING, 1,
+                  {"genesis": udp.genesis_hash}, ("9.9.9.9", 8333))
+    udp._send_one.assert_not_called()
+
+    udp._dispatch(peer_udp.MT_PING, 2,
+                  {"genesis": udp.genesis_hash,
+                   "proto": peer_udp.PROTOCOL_VERSION}, ("9.9.9.9", 8333))
+    assert udp._send_one.call_count == 1
+
+
+def test_our_own_ping_advertises_the_protocol():
+    assert peer_udp._protocol_ok({"proto": peer_udp.PROTOCOL_VERSION})
+    assert not peer_udp._protocol_ok({})
+    assert not peer_udp._protocol_ok({"proto": "nonsense"})
 
 
 def test_a_decompression_bomb_is_refused():
