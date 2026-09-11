@@ -82,6 +82,26 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 log = logging.getLogger("ec.main")
 
 
+def _env_port(name, fallback):
+    """A port from the environment, or `fallback` if it isn't set.
+
+    Checked here rather than left to argparse so a bad value says which
+    variable is wrong and why. A container that mistypes this would
+    otherwise either fail with a message naming --port, which was never
+    set, or bind somewhere unintended.
+    """
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return fallback
+    try:
+        port = int(raw)
+    except ValueError:
+        raise SystemExit(f"{name} must be a number, got {raw!r}")
+    if not 1 <= port <= 65535:
+        raise SystemExit(f"{name} must be between 1 and 65535, got {port}")
+    return port
+
+
 def _resolve_passphrase(prompt):
     env_pass = os.environ.get("LAPSECOIN_PASSPHRASE")
     if env_pass:
@@ -122,7 +142,11 @@ def _load_or_create_key(keyfile):
 def main():
     parser = argparse.ArgumentParser(description="LapseCoin node")
     parser.add_argument("--host",    default="0.0.0.0")
-    parser.add_argument("--port",    type=int, default=8333)
+    # An explicit --port still wins: the flag is the more specific of the
+    # two, and a unit file setting the variable should not override what
+    # someone typed on the command line to override it.
+    parser.add_argument("--port",    type=int,
+                        default=_env_port("LAPSECOIN_PORT", 8333))
     parser.add_argument("--keyfile", default="lapsecoin_key.json"
                         ).completer = FilesCompleter()
     parser.add_argument("--db",      default=DB_PATH

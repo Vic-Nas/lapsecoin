@@ -75,6 +75,15 @@ python main.py
 ```
 
 There is no `--passphrase` flag, since it was removed because it leaked into `ps aux` and shell history.
+
+The peer port can be set the same way, which is often easier than a flag in a container or unit file:
+
+```bash
+export LAPSECOIN_PORT=8444
+python main.py
+```
+
+`--port` still wins if you pass it, so the variable sets the default rather than overriding what you typed. The private port follows from it as usual unless you set `--private-port`.
 </details>
 
 <details>

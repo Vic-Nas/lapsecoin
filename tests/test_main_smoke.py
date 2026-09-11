@@ -134,3 +134,43 @@ class TestMainStartupSmoke:
         assert "Traceback" not in output
         assert privacy_keyfile.exists()
         assert privacy_keyfile.read_bytes() != keyfile.read_bytes()
+
+
+def _main_module():
+    """main.py as an importable module. It is a script, not a package, so
+    there is no ordinary import for it."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("_main_under_test", MAIN_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestPortFromEnvironment:
+    """LAPSECOIN_PORT, and that an explicit --port still beats it."""
+
+    def test_unset_falls_back_to_the_default(self, monkeypatch):
+        monkeypatch.delenv("LAPSECOIN_PORT", raising=False)
+        assert _main_module()._env_port("LAPSECOIN_PORT", 8333) == 8333
+
+    def test_set_is_used(self, monkeypatch):
+        monkeypatch.setenv("LAPSECOIN_PORT", "19531")
+        assert _main_module()._env_port("LAPSECOIN_PORT", 8333) == 19531
+
+    def test_blank_is_treated_as_unset(self, monkeypatch):
+        """An unset variable and one exported empty are the same intent, and
+        a unit file doing LAPSECOIN_PORT=${PORT} with PORT unset produces
+        the second."""
+        monkeypatch.setenv("LAPSECOIN_PORT", "   ")
+        assert _main_module()._env_port("LAPSECOIN_PORT", 8333) == 8333
+
+    def test_a_bad_value_says_which_variable_and_why(self, monkeypatch):
+        """Left to argparse this would fail naming --port, which was never
+        set, so the message has to name the variable that was."""
+        import pytest
+        main = _main_module()
+        for bad in ("abc", "99999", "0", "-1"):
+            monkeypatch.setenv("LAPSECOIN_PORT", bad)
+            with pytest.raises(SystemExit) as excinfo:
+                main._env_port("LAPSECOIN_PORT", 8333)
+            assert "LAPSECOIN_PORT" in str(excinfo.value)
