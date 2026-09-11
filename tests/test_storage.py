@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import state as state_mod
 import tx as tx_mod
+import storage as storage_mod
 from storage import Storage
 from tests.fixtures import (
     address, genesis, make_block, make_tx, seed_balance,
@@ -265,3 +266,101 @@ class TestMeta:
         store.set_meta("key", "old")
         store.set_meta("key", "new")
         assert store.get_meta("key") == "new"
+
+
+# ---------------------------------------------------------------------------
+# 8. Migrating a pre-v2 (uncompressed) database
+# ---------------------------------------------------------------------------
+
+def _write_old_format_db(path, blocks):
+    """Write a database exactly as the pre-v2 code did: block JSON in a
+    plain text column, no dataz, no schema_version."""
+    from peewee import SqliteDatabase, Model, IntegerField, TextField
+    import json as _json
+
+    olddb = SqliteDatabase(str(path), pragmas={"journal_mode": "wal"})
+
+    class OldBlock(Model):
+        height = IntegerField(primary_key=True)
+        hash   = TextField()
+        data   = TextField()
+
+        class Meta:
+            database = olddb
+            table_name = "block"
+
+    olddb.connect()
+    olddb.create_tables([OldBlock])
+    for b in blocks:
+        OldBlock.insert(height=b["height"], hash=b["hash"],
+                        data=_json.dumps(b)).execute()
+    olddb.close()
+
+
+class TestSchemaMigration:
+    def _blocks(self, n=25):
+        out = []
+        for h in range(n):
+            b = make_block(h, f"{h:064x}", [])
+            b["height"] = h
+            out.append(b)
+        return out
+
+    def test_old_blocks_survive_byte_for_byte(self, tmp_path):
+        """The migration rewrites how a block is stored, never what it is.
+        Anything else would change its hash and with it the chain."""
+        path = tmp_path / "old.db"
+        blocks = self._blocks()
+        _write_old_format_db(path, blocks)
+
+        store = Storage(str(path))
+        assert store.load_all_blocks() == blocks
+        assert store.load_block(7) == blocks[7]
+        store.close()
+
+    def test_migration_records_its_version_and_does_not_repeat(self, tmp_path):
+        path = tmp_path / "old.db"
+        blocks = self._blocks()
+        _write_old_format_db(path, blocks)
+
+        store = Storage(str(path))
+        assert int(store.get_meta("schema_version")) == storage_mod.SCHEMA_VERSION
+        store.close()
+
+        again = Storage(str(path))
+        assert again.load_all_blocks() == blocks
+        again.close()
+
+    def test_an_interrupted_migration_is_finished_by_the_next_open(self, tmp_path):
+        """A crash halfway leaves rows in both layouts. That database is
+        valid, and the next start must complete it rather than trip on it."""
+        path = tmp_path / "old.db"
+        blocks = self._blocks()
+        _write_old_format_db(path, blocks)
+
+        store = Storage(str(path))          # migrates fully
+        store.close()
+
+        # put some rows back the way they were, and clear the version, as
+        # an interrupted run would have left them
+        import json as _json
+        import zlib as _zlib
+        reopened = Storage(str(path))
+        for h in (3, 4, 5):
+            storage_mod.Block.update(
+                data=_json.dumps(blocks[h]), dataz=None
+            ).where(storage_mod.Block.height == h).execute()
+        reopened.set_meta("schema_version", 1)
+        reopened.close()
+
+        finished = Storage(str(path))
+        assert finished.load_all_blocks() == blocks
+        assert int(finished.get_meta("schema_version")) == storage_mod.SCHEMA_VERSION
+        finished.close()
+
+    def test_a_fresh_database_needs_no_migration(self, tmp_path):
+        store = Storage(str(tmp_path / "new.db"))
+        blk = make_block(0, "00" * 32, [])
+        store.save_block(blk)
+        assert store.load_block(0) == blk
+        store.close()
