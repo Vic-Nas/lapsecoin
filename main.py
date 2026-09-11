@@ -161,6 +161,13 @@ def main():
     argcomplete.autocomplete(parser)
     args = parser.parse_args()
     logging.getLogger("ec").setLevel(getattr(logging, args.log_level))
+    # The HTTP access log is one line per request, and requests arrive on a
+    # timer: the dashboard polls /api/info, and so does every peer's
+    # reachability prober. At INFO it buries the node's own output, so it
+    # belongs with the rest of the detail rather than in the running
+    # commentary. Asking for DEBUG asks for it.
+    if args.log_level == "DEBUG":
+        logging.getLogger("werkzeug").setLevel(logging.INFO)
 
     # Single-instance guard, checked before anything else (ports, GUI,
     # passphrase prompt, tray icon) so a second launch exits fast and

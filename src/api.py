@@ -857,7 +857,13 @@ def create_app(node, pool, private_port=8335, public_port=8333,
     app.jinja_env.globals.update(fmt_balance=fmt_balance, fmt_lapse=fmt_lapse,
                                  TICKS_PER_LAPSE=TICKS_PER_LAPSE)
     app.logger.setLevel(logging.WARNING)
-    logging.getLogger("werkzeug").setLevel(logging.INFO)
+    # Deliberately not touching the werkzeug logger. main.py already sets it
+    # to ERROR, and this line used to put it back to INFO, which is a
+    # per-request access log: the dashboard polls /api/info on a timer and
+    # every peer's reachability prober hits /api/info too, so it buried
+    # everything the node itself had to say. An operator who wants the
+    # access log can raise that logger; nothing here should decide it for
+    # them, least of all by overriding what startup chose.
     _close_db_after_request(app)
 
     # Public port is externally reachable; give every route a sane default
