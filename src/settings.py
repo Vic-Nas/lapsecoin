@@ -56,19 +56,16 @@ class Setting:
 PRIVATE_ADDRESS = Setting(
     "private_address", False, bool,
     label="Hide wallet address from peers",
-    help="Advertise a separate address to peers instead of the one this "
-         "node builds blocks with. The builder address inside a block is "
-         "public by construction (it has to be, to be paid), so this hides "
-         "the link between this node's network identity and its wallet, "
-         "not the wallet itself.",
+    help="Advertises a separate address instead of the one this node "
+         "builds blocks with. The builder address stays public either way, "
+         "it has to be, to be paid.",
 )
 
 ADVERTISED_ADDRESS = Setting(
     "advertised_address", "", str,
     label="Address to advertise",
-    help="Used when the above is on. Left empty, one is generated and kept "
-         "encrypted alongside the real key, so a private node still "
-         "advertises something rather than going dark.",
+    help="Overrides the generated privacy address. Operator/deployment "
+         "use only, set via environment; not shown on the settings page.",
 )
 
 # How long a height stays open for its draw after we start building on
@@ -82,14 +79,16 @@ ADVERTISED_ADDRESS = Setting(
 DRAW_WINDOW_SECONDS = Setting(
     "draw_window_seconds", 15.0, float, minimum=0.0,
     label="Draw window (seconds)",
-    help="After adopting a block, keep accepting a better same-height "
-         "candidate for this long before treating the height as settled. "
-         "Work on the next height continues throughout, so this is not a "
-         "wait; it only bounds how long a late but better block can still "
-         "win the draw.",
+    help="How long a height keeps accepting a better same-height block "
+         "after one is adopted. Not a wait, work on the next height "
+         "continues throughout.",
 )
 
-ALL = [PRIVATE_ADDRESS, ADVERTISED_ADDRESS, DRAW_WINDOW_SECONDS]
+# ADVERTISED_ADDRESS is deliberately not in ALL: it's an env-only escape
+# hatch for operators, not a page field. The page shows the generated
+# privacy address (always already there, see Node.ensure_privacy_key)
+# and lets the operator flip whether it's used, nothing to type in.
+ALL = [PRIVATE_ADDRESS, DRAW_WINDOW_SECONDS]
 
 
 class Settings:

@@ -8,78 +8,81 @@
 <form method="POST">
 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
-<div class="settings-grid">
-
-  <div class="card">
-    <div class="card-title">Uptime rewards</div>
-    {% if not rewarder_available %}
-    <div class="stat-label">Unavailable on this node.</div>
-    {% else %}
-    <div class="stats">
-      <div class="stat">
-        <div class="stat-label">Status</div>
-        <div class="stat-value" style="font-size:1rem;color:{{ 'var(--green)' if remaining_lapse > 0 else 'var(--muted)' }}">
-          {{ "Active" if remaining_lapse > 0 else "Inactive" }}
-        </div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Budget left</div>
-        <div class="stat-value" style="font-size:1rem">{{ "%.4f"|format(remaining_lapse) }} LAPSE</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Payout</div>
-        <div class="stat-value" style="font-size:.85rem">
-          {{ "pending" if pending else "none in flight" }}
-        </div>
+<div class="card">
+  <div class="card-title">Uptime rewards</div>
+  {% if not rewarder_available %}
+  <div class="stat-label">Unavailable on this node.</div>
+  {% else %}
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-label">Status</div>
+      <div class="stat-value" style="font-size:1rem;color:{{ 'var(--green)' if remaining_lapse > 0 else 'var(--muted)' }}">
+        {{ "Active" if remaining_lapse > 0 else "Inactive" }}
       </div>
     </div>
-    <div class="form-group" style="margin-top:.6rem">
-      <label for="budget_lapse">Budget (LAPSE remaining) &middot; balance {{ "%.4f"|format(balance_lapse) }}</label>
-      <input type="number" id="budget_lapse" name="budget_lapse" min="0" step="any"
-             value="{{ '%.4f'|format(remaining_lapse) }}">
-      {% if suggested_lapse > 0 %}
-      <div class="stat-sub">
-        Try 5% of balance:
-        <a href="#" onclick="document.getElementById('budget_lapse').value='{{ '%.4f'|format(suggested_lapse) }}'; return false;">{{ "%.4f"|format(suggested_lapse) }}</a>
-      </div>
-      {% endif %}
+    <div class="stat">
+      <div class="stat-label">Budget left</div>
+      <div class="stat-value" style="font-size:1rem">{{ "%.4f"|format(remaining_lapse) }} LAPSE</div>
     </div>
+    <div class="stat">
+      <div class="stat-label">Payout</div>
+      <div class="stat-value" style="font-size:.85rem">
+        {{ "pending" if pending else "none in flight" }}
+      </div>
+    </div>
+  </div>
+  <div class="form-row" style="margin-top:.6rem">
+    <label for="budget_lapse">Budget (LAPSE remaining) &middot; balance {{ "%.4f"|format(balance_lapse) }}</label>
+    <input type="number" id="budget_lapse" name="budget_lapse" min="0" step="any"
+           value="{{ '%.4f'|format(remaining_lapse) }}">
+    {% if suggested_lapse > 0 %}
+    <span class="stat-sub">Try 5%:
+      <a href="#" onclick="document.getElementById('budget_lapse').value='{{ '%.4f'|format(suggested_lapse) }}'; return false;">{{ "%.4f"|format(suggested_lapse) }}</a>
+    </span>
     {% endif %}
   </div>
+  {% endif %}
+</div>
 
-  <div class="card">
-    <div class="card-title">Privacy</div>
-    <div class="stat-label" style="margin-bottom:.5rem">
-      Peers learn this node's wallet whenever they ask for its tip. Turning
-      this on advertises a separate address instead. The builder address
-      inside a block stays public either way, it has to be to be paid, so
-      this hides the link between this node and its wallet, not the wallet.
-    </div>
-    <div class="stat-sub" style="margin-bottom:.6rem">
-      Currently advertising <code>{{ advertised_addr[:24] }}&hellip;</code>{% if advertised_addr != own_addr %} (not this node's own address){% endif %}
-    </div>
-    {% for s in settings %}
-    <div class="form-group">
-      {% if s.is_bool %}
-      <label for="{{ s.key }}">
-        <input type="checkbox" id="{{ s.key }}" name="{{ s.key }}"
-               {% if s.value %}checked{% endif %} {% if s.forced %}disabled{% endif %}>
-        {{ s.label }}
-      </label>
-      {% else %}
-      <label for="{{ s.key }}">{{ s.label }}</label>
-      <input type="text" id="{{ s.key }}" name="{{ s.key }}"
-             value="{{ s.value }}" {% if s.forced %}disabled{% endif %}>
-      {% endif %}
-      <div class="stat-sub">
-        {{ s.help }}
-        {% if s.forced %}<br><strong>Set by {{ s.env_name }}; edit the environment, not this page.</strong>
-        {% else %}<br>Also settable as <code>{{ s.env_name }}</code>.{% endif %}
-      </div>
-    </div>
-    {% endfor %}
+<div class="card">
+  <div class="card-title">Privacy</div>
+  {% for s in settings if s.key == "private_address" %}
+  <div class="form-row">
+    <label for="{{ s.key }}">
+      <input type="checkbox" id="{{ s.key }}" name="{{ s.key }}"
+             {% if s.value %}checked{% endif %} {% if s.forced %}disabled{% endif %}>
+      {{ s.label }}
+    </label>
+    <span class="stat-sub">
+      {{ s.help }}
+      {% if s.forced %}<strong>Set by {{ s.env_name }}.</strong>{% endif %}
+    </span>
   </div>
+  {% endfor %}
+  <div class="stat-sub" style="margin-top:.4rem">
+    {% if privacy_addr %}
+    Advertising <code>{{ advertised_addr[:24] }}&hellip;</code>
+    {% if advertised_addr == privacy_addr %}(generated privacy address){% else %}(this node's own address){% endif %}.
+    Turning the switch on or off swaps between the two, no new address is created.
+    {% else %}
+    Privacy address not generated yet; it appears the next time this node restarts.
+    {% endif %}
+  </div>
+</div>
 
+<div class="card">
+  <div class="card-title">Consensus tuning</div>
+  {% for s in settings if s.key != "private_address" %}
+  <div class="form-row">
+    <label for="{{ s.key }}">{{ s.label }}</label>
+    <input type="text" id="{{ s.key }}" name="{{ s.key }}"
+           value="{{ s.value }}" {% if s.forced %}disabled{% endif %}>
+    <span class="stat-sub">
+      {{ s.help }}
+      {% if s.forced %}<strong>Set by {{ s.env_name }}.</strong>{% endif %}
+    </span>
+  </div>
+  {% endfor %}
 </div>
 
 <button type="submit" style="margin-top:.75rem">Save</button>
