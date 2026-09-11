@@ -67,16 +67,38 @@ ADVERTISED_ADDRESS = Setting(
          "use only, set via environment; not shown on the settings page.",
 )
 
-# How long a height stays open for its draw after we start building on
-# top of it. See Node._reorg_to_sibling for what the draw is and why it
-# needs a window at all.
+# How long a height keeps accepting a better same-height block. See
+# Node._reorg_to_sibling for what the draw is and Node.open_draw for what
+# the window is anchored to.
 #
-# The window costs nothing in head start. We are computing the next
-# height throughout it, so its length trades only how long we keep
-# collecting against how much of our own next-height work we might redo.
-# That is a local call, which is why it is a setting and not a constant.
+# What this number really sets is the draw's tie tolerance: a builder who
+# finishes within it of the first finisher gets compared on vdf_output,
+# and one who finishes outside it loses the height outright however good
+# its output would have been. So it is the line between "these two tied"
+# and "that one was simply slower", expressed in seconds.
+#
+# It has a floor, and the floor is propagation, not taste. A block has to
+# reach other nodes before their windows close, so a window shorter than
+# the time a block takes to get around is one where even a genuinely
+# simultaneous builder loses for being far away in the graph. That is the
+# draw degrading back into deciding heights by network position, which is
+# the one thing it exists to prevent, and it degrades silently: nothing
+# errors, the draws just quietly stop being fair. Propagation here is not
+# raw link latency either, since a block walks a stem of ~10 expected
+# hops (gossip.STEM_CONTINUE_PROB) before it floods at all.
+#
+# The ceiling is cheaper: a reorg inside the window throws away at most
+# that much of our own next-height work, and only on a contested height.
+# Erring long wastes some work; erring short quietly breaks the rule the
+# draw is for. So when unsure, too long beats too short.
+#
+# Left a setting rather than a constant because the right floor depends
+# on the network a node is actually on. Worth knowing that unlike most
+# settings here, this one is not purely local in effect: nodes running
+# very different windows admit different sets of entrants to the same
+# draw, and disagree more often as a result.
 DRAW_WINDOW_SECONDS = Setting(
-    "draw_window_seconds", 15.0, float, minimum=0.0,
+    "draw_window_seconds", 10.0, float, minimum=0.0,
     label="Draw window (seconds)",
     help="How long a height keeps accepting a better same-height block "
          "after one is adopted. Not a wait, work on the next height "
