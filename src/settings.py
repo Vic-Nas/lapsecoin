@@ -63,7 +63,25 @@ ADVERTISED_ADDRESS = Setting(
          "advertises something rather than going dark.",
 )
 
-ALL = [PRIVATE_ADDRESS, ADVERTISED_ADDRESS]
+# How long a height stays open for its draw after we start building on
+# top of it. See Node._reorg_to_sibling for what the draw is and why it
+# needs a window at all.
+#
+# The window costs nothing in head start -- we are computing the next
+# height throughout it -- so its length trades only how long we keep
+# collecting against how much of our own next-height work we might redo.
+# That is a local call, which is why it is a setting and not a constant.
+DRAW_WINDOW_SECONDS = Setting(
+    "draw_window_seconds", 15.0, float,
+    label="Draw window (seconds)",
+    help="After adopting a block, keep accepting a better same-height "
+         "candidate for this long before treating the height as settled. "
+         "Work on the next height continues throughout, so this is not a "
+         "wait; it only bounds how long a late but better block can still "
+         "win the draw.",
+)
+
+ALL = [PRIVATE_ADDRESS, ADVERTISED_ADDRESS, DRAW_WINDOW_SECONDS]
 
 
 class Settings:

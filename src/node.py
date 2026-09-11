@@ -9,9 +9,13 @@ One cycle:
   5. pick winner          lowest vdf_output among the candidates in hand
   6. commit               swap ChainState, persist, publish view
 
-Nothing in the cycle waits. A candidate that shows up after a height is
-committed is handled by _reorg_to_sibling instead, which costs no round
-trip, so settling a height never has to block starting the next one.
+Nothing in the cycle waits, but a height still gets a real draw: after
+adopting a block we start on the next height immediately and keep the
+previous one open for a short window, during which a candidate with a
+lower vdf_output still takes it (_reorg_to_sibling). The draw is what
+decides a height by the evaluation each builder paid for rather than by
+who reached us first; building on the next height throughout is what makes
+giving it a window cost nothing.
 
 Flask threads read node.view (a NodeView snapshot). The node loop is the
 sole writer; every mutation publishes a new snapshot atomically.
@@ -170,6 +174,14 @@ class Node:
         self.mempool      = mempool_mod.Mempool()
         self.storage      = Storage(db_path or DB_PATH)
         self.settings     = settings_mod.Settings(self.storage)
+        self._privacy_key_lock = threading.Lock()
+
+        # The height whose draw is still open, and when it closes. A draw
+        # is the whole point of the vdf_output tie-break: among candidates
+        # for one height, the lowest output wins, and that has to be given
+        # a moment to resolve. See _reorg_to_sibling.
+        self._draw_height = None
+        self._draw_closes = 0.0
         self.running      = False
         self._kek         = None
         self._loop_thread = None
@@ -299,38 +311,58 @@ class Node:
 
         The builder address inside a block is public by construction -- it
         has to be, or the block can't be paid -- so nothing here hides a
-        wallet. What it hides is the link between a network identity (an
-        ip:port that answers GETINFO) and the wallet that identity owns,
-        which is otherwise handed to every peer that ever asks.
+        wallet, and peers have other ways to infer the link anyway. What it
+        does is stop handing that link to every peer that asks for our tip.
 
-        Off by default: a node nobody can pay or identify is a worse
-        neighbour, and operators who want that should have to ask for it.
-        When it is on, a separate address is generated and kept encrypted
-        beside the real key, so a private node still advertises something
-        real rather than going dark.
+        Whatever is advertised must be an address this operator can
+        actually receive at: peers pay advertised addresses (see
+        uptime_rewarder), so advertising something unspendable would burn
+        other people's coins, not protect ours. So privacy mode uses a real
+        second keypair, generated once and encrypted to disk beside the
+        main one, never a throwaway. Until that key exists we advertise
+        nothing rather than something nobody can pay.
         """
         if not self.settings.get(settings_mod.PRIVATE_ADDRESS):
             return self.addr
         configured = self.settings.get(settings_mod.ADVERTISED_ADDRESS)
         if configured:
             return configured
-        return self._generated_advertised_addr()
+        return self.storage.get_meta(self._PRIVACY_ADDR_META) or ""
 
-    _ADVERTISED_KEY_META = "advertised_key"
+    _PRIVACY_ADDR_META = "privacy_address"
 
-    def _generated_advertised_addr(self):
-        """Address of a throwaway keypair generated on first use and stored
-        encrypted under the same key material as the real one, so turning
-        privacy on doesn't mean advertising nothing, and doesn't leave a
-        second secret lying around in the clear."""
-        existing = self.storage.get_meta(self._ADVERTISED_KEY_META)
-        if existing:
-            return existing
-        _sk, pk = crypto.generate_keypair()
-        addr = crypto.public_key_to_address(pk)
-        self.storage.set_meta(self._ADVERTISED_KEY_META, addr)
-        log.info("[privacy] generated advertised address %s", addr[:24])
-        return addr
+    @property
+    def privacy_keyfile(self):
+        return self.keyfile + ".privacy"
+
+    def ensure_privacy_key(self):
+        """Create the privacy keypair if privacy is on and we don't have one.
+
+        A real keypair, saved encrypted under the same passphrase as the
+        main key, so the address we advertise is one the operator holds and
+        can spend from. Idempotent, and a no-op when privacy is off or the
+        node isn't running (no key material resident to encrypt with).
+        """
+        if not self.settings.get(settings_mod.PRIVATE_ADDRESS):
+            return None
+        if self.settings.get(settings_mod.ADVERTISED_ADDRESS):
+            return None   # operator named one; nothing to generate
+        with self._privacy_key_lock:
+            existing = self.storage.get_meta(self._PRIVACY_ADDR_META)
+            if existing:
+                return existing
+            if self._kek is None:
+                log.warning("[privacy] no key material resident; cannot create "
+                            "a privacy key yet, advertising nothing meanwhile")
+                return None
+            sk, pk = crypto.generate_keypair()
+            crypto.save_key_with_kek(self.privacy_keyfile, sk, pk, self._kek)
+            del sk
+            addr = crypto.public_key_to_address(pk)
+            self.storage.set_meta(self._PRIVACY_ADDR_META, addr)
+            log.info("[privacy] created privacy key %s -> %s",
+                     self.privacy_keyfile, addr[:24])
+            return addr
 
     def is_signing_active(self):
         return self._kek is not None
@@ -380,6 +412,7 @@ class Node:
 
     def start(self, kek):
         self._kek         = kek
+        self.ensure_privacy_key()
         self.running      = True
         self._loop_thread = threading.current_thread()
         log.info("[startup] node ready  addr=%s", self.addr)
@@ -626,6 +659,10 @@ class Node:
         if winner is None:
             return
         self._commit(winner, relay=relay)
+        # Our own evaluation for this height finished, so everything that
+        # could enter its draw already has: _pick_winner just compared them
+        # all. Close it rather than leaving the window running.
+        self._close_draw()
 
     def _consider_inbound_block(self, blk, cs, accumulated_blocks):
         """Record an inbound block for this cycle's winner pick."""
@@ -665,18 +702,42 @@ class Node:
         remaining = own_median - (time.monotonic() - vdf_start)
         return remaining > stats["median"]
 
-    def _reorg_to_sibling(self, blk, cs):
-        """Take a same-height alternative to our own tip when it is the
-        better chain, locally and without asking anyone anything.
+    def open_draw(self, height):
+        """Open the draw for `height`: until it closes, a better candidate
+        for that height can still take the tip from the one we adopted."""
+        self._draw_height = height
+        self._draw_closes = time.monotonic() + self.settings.get(
+            settings_mod.DRAW_WINDOW_SECONDS)
 
-        This is what makes waiting unnecessary. A candidate for a height we
-        have already committed is not late and it is not lost: swap our tip
-        for it and the result is a chain of equal cumulative work whose tip
-        has a lower vdf_output, which is precisely what is_better_than
-        prefers. We can build that alternative ourselves out of the chain we
-        already hold, so settling the height costs no round trip and does
-        not have to happen before moving on to the next one.
+    def _close_draw(self):
+        self._draw_height = None
+        self._draw_closes = 0.0
+
+    def _draw_is_open(self, height):
+        return (self._draw_height == height
+                and time.monotonic() < self._draw_closes)
+
+    def _reorg_to_sibling(self, blk, cs):
+        """Take a same-height alternative to our tip when it wins the draw.
+
+        The draw is what the vdf_output tie-break is for: among candidates
+        for one height the lowest output wins, so that who wins is decided
+        by the evaluation each builder actually paid for and not by who
+        happened to reach us first. It needs a window to resolve in, and
+        fork choice alone cannot provide one: is_better_than only compares
+        output between chains of *equal* work, so the moment anybody builds
+        on top of the first block to arrive, that chain has strictly more
+        work and every sibling loses regardless of its output. Left to fork
+        choice, first arrival beats the draw, which hands the height to
+        whoever is best connected -- exactly what the tie-break exists to
+        stop.
+
+        So the window is explicit, and it is not a wait: we start building
+        on the adopted tip immediately and keep doing so throughout, which
+        is what makes it affordable. See open_draw.
         """
+        if not self._draw_is_open(blk.get("height")):
+            return False
         if blk.get("height") != cs.height or cs.height == 0:
             return False
         if blk.get("previous_hash") != cs.chain[-2]["hash"]:
@@ -685,7 +746,7 @@ class Node:
             return False
         ok, _err = self.apply_better_chain(cs.chain[:-1] + [blk])
         if ok:
-            log.info("[reorg] took sibling at height=%d hash=%s (lower vdf_output)",
+            log.info("[draw] height=%d won by %s (lower vdf_output)",
                      blk["height"], blk["hash"][:12])
         return ok
 
@@ -776,6 +837,13 @@ class Node:
         # on when it arrived (_handle_inbound_block), and our own candidate
         # when we built it -- re-sending at commit time would just be a
         # second copy of something the network already has.
+
+        # The height we just took is now open for its draw: a better
+        # candidate for it can still win until the window closes, while we
+        # get on with the next height in the meantime. Our own finished
+        # candidate closes it immediately (below) -- at that point we have
+        # compared everything we were ever going to.
+        self.open_draw(blk["height"])
 
         log.info("[commit] height=%d  hash=%s  tx=%d  builder=%s",
                  blk["height"], blk["hash"][:12], len(blk["transactions"]),

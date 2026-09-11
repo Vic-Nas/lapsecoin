@@ -1153,22 +1153,43 @@ class TestAdvertisedAddress:
         node, *_ = node_env
         assert node.advertised_addr == node.addr
 
-    def test_on_advertises_something_else(self, node_env, monkeypatch):
+    def test_on_advertises_a_real_key_we_hold(self, node_env, monkeypatch):
+        """Peers pay advertised addresses (uptime_rewarder), so whatever we
+        advertise has to be spendable by this operator. It's a real keypair,
+        encrypted to disk beside the main one -- never a throwaway, which
+        would burn the coins of anyone who paid it."""
         node, *_ = node_env
         monkeypatch.setenv("LAPSECOIN_PRIVATE_ADDRESS", "1")
-        assert node.advertised_addr != node.addr
-        assert node.advertised_addr   # still advertises something, not nothing
+        addr = node.ensure_privacy_key()
 
-    def test_generated_address_is_stable_across_calls(self, node_env, monkeypatch):
+        assert addr and addr != node.addr
+        assert node.advertised_addr == addr
+        assert os.path.exists(node.privacy_keyfile)
+        # and the operator can actually open it with their own passphrase
+        recovered = crypto.decrypt_secret_key(node.privacy_keyfile, kek=node._kek)
+        assert recovered
+
+    def test_advertises_nothing_until_that_key_exists(self, node_env, monkeypatch):
+        """Better to advertise nothing than an address nobody can be paid
+        at."""
         node, *_ = node_env
         monkeypatch.setenv("LAPSECOIN_PRIVATE_ADDRESS", "1")
-        assert node.advertised_addr == node.advertised_addr
+        assert node.advertised_addr == ""
+
+    def test_generated_key_is_created_once(self, node_env, monkeypatch):
+        node, *_ = node_env
+        monkeypatch.setenv("LAPSECOIN_PRIVATE_ADDRESS", "1")
+        first = node.ensure_privacy_key()
+        assert node.ensure_privacy_key() == first
+        assert node.advertised_addr == first
 
     def test_an_explicitly_configured_address_is_used(self, node_env, monkeypatch):
         node, *_ = node_env
         monkeypatch.setenv("LAPSECOIN_PRIVATE_ADDRESS", "1")
         monkeypatch.setenv("LAPSECOIN_ADVERTISED_ADDRESS", "chosen.addr")
         assert node.advertised_addr == "chosen.addr"
+        # nothing generated: the operator named one they already control
+        assert node.ensure_privacy_key() is None
 
     def test_env_overrides_stored_value_and_is_marked_forced(self, node_env, monkeypatch):
         import settings as settings_mod
@@ -1240,3 +1261,84 @@ class TestBackgroundPoll:
 
         node._sync_if_triggered()
         pool.strike.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 22. The draw
+# ---------------------------------------------------------------------------
+
+class TestDraw:
+    """Among candidates for one height the lowest vdf_output wins, so that
+    the height goes to whoever's evaluation actually earned it rather than
+    to whoever reached us first. Fork choice can't deliver that on its own:
+    is_better_than compares output only between chains of equal work, so as
+    soon as anyone builds on top of the first arrival, every sibling loses
+    no matter its output. Hence an explicit window -- during which we are
+    building on the next height anyway, so it costs no head start."""
+
+    def test_better_sibling_wins_while_the_draw_is_open(self, node_env):
+        node, *_ = node_env
+        g = node.cs.tip
+        first  = make_block(1, g["hash"], [], builder_index=0, vdf_output="zz")
+        better = make_block(1, g["hash"], [], builder_index=1, vdf_output="aa")
+
+        node._commit(first)                      # adopting opens the draw
+        node._handle_inbound_block(
+            {"block": better, "sender": "1.2.3.4:1", "stemming": False}, [])
+
+        assert node.cs.tip["hash"] == better["hash"]
+
+    def test_worse_sibling_never_wins(self, node_env):
+        node, *_ = node_env
+        g = node.cs.tip
+        first = make_block(1, g["hash"], [], builder_index=0, vdf_output="aa")
+        worse = make_block(1, g["hash"], [], builder_index=1, vdf_output="zz")
+
+        node._commit(first)
+        node._handle_inbound_block(
+            {"block": worse, "sender": "1.2.3.4:1", "stemming": False}, [])
+
+        assert node.cs.tip["hash"] == first["hash"]
+
+    def test_a_sibling_arriving_after_the_draw_closes_does_not_win(self, node_env):
+        """The window has to end, or a node would keep redoing next-height
+        work indefinitely on every straggler."""
+        node, *_ = node_env
+        g = node.cs.tip
+        first  = make_block(1, g["hash"], [], builder_index=0, vdf_output="zz")
+        better = make_block(1, g["hash"], [], builder_index=1, vdf_output="aa")
+
+        node._commit(first)
+        node._close_draw()
+        node._handle_inbound_block(
+            {"block": better, "sender": "1.2.3.4:1", "stemming": False}, [])
+
+        assert node.cs.tip["hash"] == first["hash"]
+
+    def test_window_length_is_adjustable(self, node_env, monkeypatch):
+        import settings as settings_mod
+        node, *_ = node_env
+        monkeypatch.setenv("LAPSECOIN_DRAW_WINDOW_SECONDS", "0")
+        g = node.cs.tip
+        first  = make_block(1, g["hash"], [], builder_index=0, vdf_output="zz")
+        better = make_block(1, g["hash"], [], builder_index=1, vdf_output="aa")
+
+        node._commit(first)                      # zero-length window
+        node._handle_inbound_block(
+            {"block": better, "sender": "1.2.3.4:1", "stemming": False}, [])
+
+        assert node.cs.tip["hash"] == first["hash"]
+
+    def test_our_own_finished_candidate_closes_the_draw(self, node_env, monkeypatch):
+        """Once our own evaluation lands, _pick_winner has compared
+        everything that could enter the draw, so it is settled."""
+        node, *_ = node_env
+
+        def _evaluate(challenge, iterations, handle=None):
+            return "aa" * 100, "bb" * 100, 0.01
+
+        monkeypatch.setattr(node_mod.vdf_mod, "evaluate", _evaluate)
+        node._run_cycle()
+
+        assert node.cs.height == 1
+        assert node._draw_height is None
