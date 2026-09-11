@@ -22,7 +22,7 @@
     /* Odds-page builder identity. Capped at 3: validated colorblind-safe
        and normal-vision-distinguishable for *any* pair landing next to
        each other (not just adjacent ones), which a scatter of builders
-       across time requires -- a 4th slot fails that bar even with a
+       across time requires. A 4th slot fails that bar even with a
        legend. Every other builder folds into --series-other instead of
        a 4th generated color. */
     --series-1:     #2a78d6;
@@ -331,7 +331,7 @@
     badge.addEventListener("click", function () {
       try { localStorage.setItem(KEY, "1"); } catch (e) {}
     });
-  } catch (e) { /* localStorage unavailable, e.g. private browsing -- skip quietly */ }
+  } catch (e) { /* localStorage unavailable, e.g. private browsing, skip quietly */ }
 })();
 </script>
 {% endif %}

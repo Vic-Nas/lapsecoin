@@ -3,7 +3,7 @@
 {% if not race %}
 <div class="card">
   <div class="card-title">Race odds</div>
-  <p>Not enough chain history yet -- check back after a few blocks.</p>
+  <p>Not enough chain history yet, check back after a few blocks.</p>
 </div>
 {% else %}
 <div class="stats">
@@ -45,14 +45,9 @@
     {% set prev = chart.points[loop.index0 - 1] %}
     <line x1="{{ prev.x }}" y1="{{ prev.y }}" x2="{{ p.x }}" y2="{{ p.y }}"
           stroke="{{ p.color }}" stroke-width="1.75">
-      <title>Block {{ p.height }}: {{ "%.1f"|format(p.seconds) }}s{{ " -- " ~ p.builder if p.builder }}</title>
+      <title>Block {{ p.height }}: {{ "%.1f"|format(p.seconds) }}s{{ ", " ~ p.builder if p.builder }}{{ " (off scale, clipped to the edge)" if p.clipped }}</title>
     </line>
     {% endif %}
-    {% endfor %}
-    {% for p in chart.points if p.clipped %}
-    <circle cx="{{ p.x }}" cy="{{ p.y }}" r="4" fill="var(--paper)" stroke="{{ p.color }}" stroke-width="2">
-      <title>Block {{ p.height }}: {{ "%.1f"|format(p.seconds) }}s{{ " -- " ~ p.builder if p.builder }} (off scale, chart zoomed to typical range)</title>
-    </circle>
     {% endfor %}
 
     <!-- Reference lines render last (on top of the data) so their labels
@@ -87,9 +82,9 @@
   <p class="stat-sub" style="margin-top:.4rem">
     Block interval is a proxy for the winning builder's real build time. Color marks the
     top 3 builders by block count in this window; everyone else shares the muted "Other"
-    color. The chart is zoomed to the typical range; hollow points fall outside it and are
-    clipped to the edge (hover for the real value) -- this doesn't affect the odds figure
-    above, which counts every interval.
+    color. The chart is zoomed to the typical range, so a block outside it is drawn flat
+    against the edge (hover for its real value). That changes only where the line is
+    drawn, never the odds figure above, which counts every interval.
   </p>
 </div>
 <script>
@@ -110,16 +105,12 @@
     chart.points.forEach(function (p, i) {
       if (i === 0) return;
       const prev = chart.points[i - 1];
-      const label = p.builder ? " -- " + p.builder : "";
+      const label = p.builder ? ", " + p.builder : "";
+      const off = p.clipped ? " (off scale, clipped to the edge)" : "";
       s += `<line x1="${prev.x}" y1="${prev.y}" x2="${p.x}" y2="${p.y}" stroke="${p.color}" stroke-width="1.75">` +
-           `<title>Block ${p.height}: ${fmt1(p.seconds)}s${label}</title></line>`;
+           `<title>Block ${p.height}: ${fmt1(p.seconds)}s${label}${off}</title></line>`;
     });
-    chart.points.filter(function (p) { return p.clipped; }).forEach(function (p) {
-      const label = p.builder ? " -- " + p.builder : "";
-      s += `<circle cx="${p.x}" cy="${p.y}" r="4" fill="var(--paper)" stroke="${p.color}" stroke-width="2">` +
-           `<title>Block ${p.height}: ${fmt1(p.seconds)}s${label} (off scale, chart zoomed to typical range)</title></circle>`;
-    });
-    // Reference lines/labels last -- on top of the data lines, see the
+    // Reference lines/labels last, on top of the data lines, see the
     // matching comment in the server-rendered SVG above.
     s += `<line x1="${x0}" y1="${chart.median_y}" x2="${chart.width}" y2="${chart.median_y}" stroke="var(--ink-dim)" stroke-width="1.25" stroke-dasharray="4,3"/>`;
     s += `<text x="${chart.width - 4}" y="${chart.median_y - 4}" font-size="10" font-weight="600" fill="var(--ink-dim)" text-anchor="end" paint-order="stroke" stroke="var(--paper)" stroke-width="3">window median ${fmt0(medianVal)}s</text>`;
