@@ -177,12 +177,18 @@ def _broadcast_from_all_interfaces(payload: bytes, port: int):
     for ip in _local_ips():
         if ip.startswith("127."):
             continue
+        # closesocket via `with`, not a close() after the send: this runs on
+        # every discovery round, and a broadcast that fails is the norm, not
+        # the exception, on a host whose network does not carry one (a cloud
+        # VPC, most notably, where sendto raises ENETUNREACH every time). A
+        # close() placed after the send is skipped on exactly that path, and
+        # leaving the descriptor to be reclaimed by refcounting is not
+        # something to rely on when the failing path is the common one.
         try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-            s.bind((ip, 0))
-            s.sendto(payload, ("255.255.255.255", port))
-            s.close()
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                s.bind((ip, 0))
+                s.sendto(payload, ("255.255.255.255", port))
         except OSError:
             log.debug("[udp] broadcast via %s failed", ip, exc_info=True)
 
