@@ -37,7 +37,7 @@
     {% for t in chart.ticks %}
     <line x1="{{ chart.points[0].x if chart.points else 0 }}" y1="{{ t.y }}"
           x2="{{ chart.width }}" y2="{{ t.y }}" stroke="var(--rule-lt)" stroke-width="0.5" opacity="0.6"/>
-    <text x="4" y="{{ t.y + 3 }}" font-size="10" fill="var(--ink-dim)">{{ "%.0f"|format(t.value) }}s</text>
+    <text x="4" y="{{ t.y + 3 }}" font-size="10" fill="var(--ink-dim)">{{ "%.0f"|format(t.value) }}s{{ t.suffix }}</text>
     {% endfor %}
 
     {% for p in chart.points %}
@@ -100,7 +100,7 @@
     s += `<line x1="${x0}" y1="${chart.plot_bottom}" x2="${chart.width}" y2="${chart.plot_bottom}" stroke="var(--rule)" stroke-width="1"/>`;
     chart.ticks.forEach(function (t) {
       s += `<line x1="${x0}" y1="${t.y}" x2="${chart.width}" y2="${t.y}" stroke="var(--rule-lt)" stroke-width="0.5" opacity="0.6"/>`;
-      s += `<text x="4" y="${t.y + 3}" font-size="10" fill="var(--ink-dim)">${fmt0(t.value)}s</text>`;
+      s += `<text x="4" y="${t.y + 3}" font-size="10" fill="var(--ink-dim)">${fmt0(t.value)}s${t.suffix || ""}</text>`;
     });
     chart.points.forEach(function (p, i) {
       if (i === 0) return;

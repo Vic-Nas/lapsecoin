@@ -632,6 +632,28 @@ class TestRaceChartAxisZoom:
         assert len(clipped) == 1
         assert clipped[0]["seconds"] == 1500
 
+    def test_axis_bound_is_marked_when_something_clips_to_it(self):
+        """A line resting on the plot edge is reading against a bound that
+        means "this or more", so the axis has to say so rather than show a
+        plain number there."""
+        import api as api_mod
+        chain = self._chain([150, 150, 150, 150, 150, 1500])
+        race = block_mod.race_odds(chain, own_seconds=None)
+        ticks = api_mod._race_chart(race)["ticks"]
+
+        assert ticks[-1]["suffix"] == "+"
+        assert all(t["suffix"] == "" for t in ticks[:-1])
+
+    def test_axis_bound_is_not_marked_when_nothing_clips(self):
+        """With everything on scale the bound is just a bound, and a + there
+        would claim an off-scale value that does not exist."""
+        import api as api_mod
+        chain = self._chain([150, 152, 148, 151, 149, 150])
+        race = block_mod.race_odds(chain, own_seconds=None)
+        ticks = api_mod._race_chart(race)["ticks"]
+
+        assert all(t["suffix"] == "" for t in ticks)
+
     def test_normal_points_not_clipped(self):
         import api as api_mod
         chain = self._chain([150, 150, 150, 150, 150, 1500])

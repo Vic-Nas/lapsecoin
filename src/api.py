@@ -408,9 +408,26 @@ def _race_chart(race):
         own_y = round(y_at(own_seconds), 1)
         own_clipped = own_seconds > axis_hi or own_seconds < axis_lo
 
-    ticks = [{"value": axis_lo + i * (axis_hi - axis_lo) / (_TICK_COUNT - 1),
-              "y": round(y_at(axis_lo + i * (axis_hi - axis_lo) / (_TICK_COUNT - 1)), 1)}
-             for i in range(_TICK_COUNT)]
+    # The end ticks sit exactly on the plot edges, which are also where
+    # anything off scale gets clamped to. Say so on the axis when that
+    # actually happened: a line resting on the edge is otherwise reading
+    # against a bound that means "this or more" while the label says a
+    # plain number. Marked only when something really is clipped there,
+    # since with nothing off scale the bound is just a bound.
+    clipped_hi = any(s > axis_hi for _, s, _ in rows) or (
+        own_seconds is not None and own_seconds > axis_hi)
+    clipped_lo = any(s < axis_lo for _, s, _ in rows) or (
+        own_seconds is not None and own_seconds < axis_lo)
+
+    ticks = []
+    for i in range(_TICK_COUNT):
+        value = axis_lo + i * (axis_hi - axis_lo) / (_TICK_COUNT - 1)
+        suffix = ""
+        if i == _TICK_COUNT - 1 and clipped_hi:
+            suffix = "+"
+        elif i == 0 and clipped_lo:
+            suffix = "-"
+        ticks.append({"value": value, "y": round(y_at(value), 1), "suffix": suffix})
 
     return {"points": points, "own_y": own_y, "own_clipped": own_clipped,
             "median_y": round(y_at(median), 1), "ticks": ticks,
