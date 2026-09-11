@@ -691,7 +691,8 @@ def _shared_read_only_routes(app, node, pool, limiter,
     def odds():
         race = block_mod.race_odds(node.view.chain, node.own_vdf_median())
         chart = _race_chart(race) if race else None
-        return render_template("odds.html", title="Race Odds", race=race, chart=chart)
+        return render_template("odds.html", title="Race Odds", race=race,
+                               chart=chart, reorgs=node.reorg_stats())
 
     # ---- JSON API (read-only) --------------------------------------------
 
@@ -704,6 +705,7 @@ def _shared_read_only_routes(app, node, pool, limiter,
             "median": race["median"],
             "own_seconds": race["own_seconds"], "odds_pct": race["odds_pct"],
             "window_len": len(race["window"]), "chart": _race_chart(race),
+            "reorgs": node.reorg_stats(),
         })
 
     @app.route("/api/peers", endpoint=pfx+"api_peers")

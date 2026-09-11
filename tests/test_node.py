@@ -1684,3 +1684,64 @@ class TestStatusLine:
 
         node._sync_if_triggered()
         assert node.status_line == "computing VDF for block 5"
+
+
+# ---------------------------------------------------------------------------
+# 27. Reorg depth, as a number an operator can act on
+# ---------------------------------------------------------------------------
+
+class TestReorgStats:
+    def test_nothing_recorded_on_a_fresh_node(self, node_env):
+        node, *_ = node_env
+        assert node.reorg_stats() == {"deepest": 0, "count": 0, "deepest_at": 0}
+
+    def test_a_one_block_swap_is_not_counted(self, node_env):
+        """That is the draw settling a tie. It happens constantly and by
+        design, and counting it would bury the rare event this exists to
+        surface under noise from the common one."""
+        node, *_ = node_env
+        node._record_reorg(1)
+        assert node.reorg_stats()["count"] == 0
+        assert node.reorg_stats()["deepest"] == 0
+
+    def test_a_deeper_one_is_counted(self, node_env):
+        node, *_ = node_env
+        node._record_reorg(5)
+        stats = node.reorg_stats()
+        assert stats == {"deepest": 5, "count": 1, "deepest_at": stats["deepest_at"]}
+        assert stats["deepest_at"] > 0
+
+    def test_it_keeps_the_deepest_not_the_latest(self, node_env):
+        node, *_ = node_env
+        node._record_reorg(9)
+        node._record_reorg(2)
+        assert node.reorg_stats() == {"deepest": 9, "count": 2,
+                                      "deepest_at": node.reorg_stats()["deepest_at"]}
+
+    def test_it_survives_a_restart(self, node_env):
+        """A deep reorg may happen once in a node's life, so a counter that
+        forgets it on restart is not worth reading."""
+        node, keyfile, *_ = node_env
+        node._record_reorg(7)
+        reopened = node_mod.Node(
+            keyfile=keyfile, public_key=node.pk, gossip=node.gossip,
+            syncer=node.syncer, pool=node.pool, net_in_q=node.net_in_q,
+            db_path=node.storage.path)
+        assert reopened.reorg_stats()["deepest"] == 7
+        assert reopened.reorg_stats()["count"] == 1
+
+    def test_a_real_sibling_swap_through_the_draw_records_nothing(self, node_env):
+        """End to end rather than by calling the recorder directly: the draw
+        path must not register, and it is the reason the filter is on depth
+        rather than on which caller it came from."""
+        node, *_ = node_env
+        g = node.cs.tip
+        first  = make_block(1, g["hash"], [], builder_index=0, vdf_output="zz")
+        better = make_block(1, g["hash"], [], builder_index=1, vdf_output="aa")
+
+        node._commit(first)
+        node._handle_inbound_block(
+            {"block": better, "sender": "1.2.3.4:1", "stemming": False}, [])
+
+        assert node.cs.tip["hash"] == better["hash"]   # the draw did fire
+        assert node.reorg_stats()["count"] == 0        # and was not counted

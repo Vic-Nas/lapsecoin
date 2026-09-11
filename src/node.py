@@ -77,6 +77,11 @@ _rng = _secrets.SystemRandom()
 # it tracks whatever pace the network is actually running at rather than
 # a hardcoded seconds value. Above 1 so ordinary block-to-block jitter
 # doesn't read as silence.
+# A reorg that replaced this many blocks or more is worth remembering. One
+# block below it is the draw settling a tie, which happens constantly and
+# is not what anyone is looking for when they ask how deep reorgs go.
+REORG_NOTABLE_DEPTH = 2
+
 SILENCE_MULTIPLE = 3.0
 
 # Fallback for the silence threshold before the chain is long enough to
@@ -1586,12 +1591,51 @@ class Node:
             log.exception("[reorg] mempool re-add failed; chain state already "
                           "committed, mempool may hold stale entries until pruned")
 
-        if fork_point < self.cs.height:
+        # How much of our own chain was thrown away, which is not the same
+        # as how much we took on: a heavier fork can be shorter.
+        discarded = len(old_chain) - fork_point
+        if discarded:
             log.warning("[sync] replaced our last %d block(s): now on block %d",
-                        self.cs.height - fork_point + 1, self.cs.height)
+                        discarded, self.cs.height)
+            self._record_reorg(discarded)
         else:
             log.info("[sync] now on block %d", self.cs.height)
         return True, None
+
+    def _record_reorg(self, discarded):
+        """Keep the deepest reorg this node has seen, and how many.
+
+        Only reorgs that replaced more than one block. A one-block swap is
+        the draw settling a tie (_reorg_to_sibling), which is routine and
+        constant by design, and counting it would bury the rare event this
+        exists to surface under noise from the common one. Filtering on
+        depth rather than on which caller it came from means there is one
+        place doing the recording, and a one-block swap from any other
+        source is judged the same way.
+
+        Kept in storage rather than memory. A deep reorg may happen once in
+        a node's life, and a counter that forgets it on restart is not
+        worth reading.
+        """
+        if discarded < REORG_NOTABLE_DEPTH:
+            return
+        count = int(self.storage.get_meta("reorg_count", 0) or 0) + 1
+        deepest = max(int(self.storage.get_meta("reorg_deepest", 0) or 0), discarded)
+        self.storage.set_meta("reorg_count", count)
+        self.storage.set_meta("reorg_deepest", deepest)
+        if discarded >= deepest:
+            self.storage.set_meta("reorg_deepest_at", int(time.time()))
+        log.warning("[sync] that was a deep reorg: %d blocks replaced "
+                    "(deepest this node has seen: %d, %d in total)",
+                    discarded, deepest, count)
+
+    def reorg_stats(self):
+        """Deepest reorg seen and how many, for display."""
+        return {
+            "deepest": int(self.storage.get_meta("reorg_deepest", 0) or 0),
+            "count":   int(self.storage.get_meta("reorg_count", 0) or 0),
+            "deepest_at": int(self.storage.get_meta("reorg_deepest_at", 0) or 0),
+        }
 
     def _reorg_mempool(self, fork_point, old_chain, new_chain, new_state):
         """Re-add unconfirmed txs from the abandoned local branch, validated

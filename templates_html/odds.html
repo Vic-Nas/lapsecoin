@@ -21,6 +21,14 @@
     <div class="stat-value" id="window-median-val">{{ "%.1f"|format(race.median) }}s</div>
     <div class="stat-sub" id="window-count">{{ race.window|length }} blocks</div>
   </div>
+  <div class="stat">
+    <div class="stat-label">Deepest reorg</div>
+    <div class="stat-value" id="reorg-deepest">{{ reorgs.deepest if reorgs.deepest else "none" }}</div>
+    <div class="stat-sub" id="reorg-count">
+      {% if reorgs.count %}{{ reorgs.count }} seen, one-block ties not counted
+      {% else %}nothing deeper than a tie so far{% endif %}
+    </div>
+  </div>
 </div>
 
 <div class="card">
@@ -148,6 +156,12 @@
         data.own_seconds !== null ? fmt1(data.own_seconds) + "s" : "--";
       document.getElementById("window-median-val").textContent = fmt1(data.median) + "s";
       document.getElementById("window-count").textContent = data.window_len + " blocks";
+
+      const r = data.reorgs || {deepest: 0, count: 0};
+      document.getElementById("reorg-deepest").textContent = r.deepest || "none";
+      document.getElementById("reorg-count").textContent = r.count
+        ? r.count + " seen, one-block ties not counted"
+        : "nothing deeper than a tie so far";
 
       const svg = document.getElementById("odds-svg");
       if (svg) svg.innerHTML = renderChart(data.chart, data.median);
