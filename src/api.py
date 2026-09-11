@@ -88,6 +88,7 @@ from flask_limiter.util import get_remote_address
 import block as block_mod
 import crypto as crypto_mod
 import state as state_mod
+import storage as storage_mod
 import tx as tx_mod
 from params import TICKS_PER_LAPSE, SUPPLY_CAP
 from version import LOCAL_VERSION
@@ -792,6 +793,35 @@ def _shared_read_only_routes(app, node, pool, limiter,
 # PyInstaller-aware base path
 # ---------------------------------------------------------------------------
 
+def _close_db_after_request(app):
+    """Release this thread's database connection when the request ends.
+
+    Both apps run on Werkzeug's threaded server, which handles every
+    request on a brand new thread, and peewee keeps its connection in
+    thread-local state: the first query a thread runs opens a connection
+    of its own. Nothing closes it when the thread exits, so each request
+    that touches storage leaves an open sqlite handle behind (two, with
+    WAL) until the garbage collector happens to get to it. A polled
+    endpoint opens them faster than that, and the process dies on EMFILE
+    with hundreds of handles to the same database file.
+
+    Registered per app rather than inside a route, so it also covers any
+    route added later that touches storage, and covers the ones that do so
+    indirectly: reading a setting is a database read, which is easy to
+    forget when it looks like a plain attribute (Node.advertised_addr).
+
+    Only ever closes the calling thread's own connection, which is why
+    this cannot disturb the node loop's.
+    """
+    @app.teardown_request
+    def _teardown(_exc=None):
+        try:
+            if not storage_mod.db.is_closed():
+                storage_mod.db.close()
+        except Exception:
+            log.debug("[api] closing request db connection failed", exc_info=True)
+
+
 def _base_dir():
     """Return the directory that contains templates_html/, working both from
     source (repo root) and inside a PyInstaller bundle (sys._MEIPASS)."""
@@ -811,6 +841,7 @@ def create_app(node, pool, private_port=8335, public_port=8333,
                                  TICKS_PER_LAPSE=TICKS_PER_LAPSE)
     app.logger.setLevel(logging.WARNING)
     logging.getLogger("werkzeug").setLevel(logging.INFO)
+    _close_db_after_request(app)
 
     # Public port is externally reachable; give every route a sane default
     # so a route added later isn't unprotected by omission. /api/tx/send
@@ -851,6 +882,7 @@ def create_private_app(node, pool, private_port=8335, public_port=8333,
     app.jinja_env.globals.update(fmt_balance=fmt_balance, fmt_lapse=fmt_lapse,
                                  TICKS_PER_LAPSE=TICKS_PER_LAPSE)
     app.logger.setLevel(logging.WARNING)
+    _close_db_after_request(app)
 
     limiter = Limiter(get_remote_address, app=app, default_limits=[],
                       storage_uri="memory://")
