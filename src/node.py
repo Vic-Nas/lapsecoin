@@ -1212,10 +1212,18 @@ class Node:
                 return False
             log.debug("[sync] %s, polling %s", reason, peer)
 
+        # What the node is actually doing, while it is doing it. A sync can
+        # run for many seconds and nothing used to say so: status_line kept
+        # reading "computing VDF", which is what the VDF thread is doing but
+        # not what the node is waiting on, so a node catching up and a node
+        # stuck looked exactly the same from outside.
+        resume_status = self.status_line
+        self.status_line = f"checking {peer} for a better chain"
         adopted = self.syncer.check_and_sync(
             self.cs.chain,
             lambda chain: self.apply_better_chain(chain)[0],
             peer=peer,
+            progress=self._note_sync_progress,
             info_timeout=SYNC_INFO_TIMEOUT_SECONDS,
             local_work=self.cs.cumulative_iterations,
             max_pages=SYNC_PAGES_PER_PASS,
@@ -1225,6 +1233,11 @@ class Node:
             # spent beyond that is time spent being a hole in propagation.
             budget=self._echo_deadline_seconds(),
         )
+        if not adopted:
+            # Nothing came of it, so put back whatever the node was saying
+            # before rather than leaving a finished check on screen.
+            self.status_line = resume_status
+
         if hinted and not adopted:
             # The hint was a block we could not validate. We don't have
             # its parents, so acting on it is a bet, and this peer just
@@ -1235,6 +1248,17 @@ class Node:
             log.debug("[sync] hint from %s led nowhere", peer)
             self.pool.strike(peer)
         return adopted
+
+    def _note_sync_progress(self, height, target):
+        """Show how far a sync has got, as it gets there.
+
+        Called once per applied page rather than per block, so it costs
+        nothing and still moves: a page is up to FETCH_CHUNK blocks, and a
+        node far behind fetches many of them.
+        """
+        behind = max(target - height, 0)
+        self.status_line = (f"syncing: block {height:,} of {target:,} "
+                            f"({behind:,} to go)")
 
     def _best_known_peer(self):
         """The peer we last saw claiming the highest chain, else any peer.

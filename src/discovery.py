@@ -252,7 +252,10 @@ class Discovery:
         if not fresh:
             return
 
-        log.info("[peer] flushing %d candidate(s)  addrs=%s", len(fresh), fresh)
+        # "flushing" read as "discarding" to at least one operator, who
+        # concluded their peers were being rejected. It is the opposite:
+        # these are about to be tried.
+        log.info("[peer] trying %d candidate(s)  addrs=%s", len(fresh), fresh)
 
         admitted = 0
         for addr in fresh:

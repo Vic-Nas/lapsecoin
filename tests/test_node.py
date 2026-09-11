@@ -1623,3 +1623,43 @@ class TestJudgementCache:
         node._remember_judgement(blk, node.cs, True)
         node._commit(blk)
         assert node._judged(blk, node.cs) is None
+
+
+# ---------------------------------------------------------------------------
+# 26. What the node says it is doing
+# ---------------------------------------------------------------------------
+
+class TestStatusLine:
+    def test_syncing_says_so_instead_of_still_claiming_vdf(self, node_env):
+        """A sync runs for many seconds on the loop thread. While it did not
+        touch status_line, a node catching up and a node stuck looked
+        identical from outside, which is exactly what an operator checks."""
+        node, *_, syncer, pool, _q = node_env
+        pool.random.return_value = "1.2.3.4:8333"
+        node._last_block_seen = 0.0          # force the silence trigger
+        node.status_line = "computing VDF for block 5"
+
+        seen = []
+        syncer.check_and_sync.side_effect = (
+            lambda *a, **kw: seen.append(node.status_line) or False)
+
+        node._sync_if_triggered()
+        assert seen and "1.2.3.4:8333" in seen[0]
+
+    def test_progress_reports_how_far_along_it_is(self, node_env):
+        node, *_ = node_env
+        node._note_sync_progress(1200, 8739)
+        assert "1,200" in node.status_line
+        assert "8,739" in node.status_line
+
+    def test_a_check_that_finds_nothing_restores_what_it_interrupted(self, node_env):
+        """Otherwise a routine background probe leaves a finished check on
+        screen in place of what the node is actually doing."""
+        node, *_, syncer, pool, _q = node_env
+        pool.random.return_value = "1.2.3.4:8333"
+        node._last_block_seen = 0.0
+        syncer.check_and_sync.return_value = False
+        node.status_line = "computing VDF for block 5"
+
+        node._sync_if_triggered()
+        assert node.status_line == "computing VDF for block 5"

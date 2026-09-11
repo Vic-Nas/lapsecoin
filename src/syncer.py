@@ -55,7 +55,8 @@ class Syncer:
         self.udp  = udp
 
     def check_and_sync(self, local_chain, apply_fn, peer=None, info_timeout=8.0,
-                       local_work=None, max_pages=None, budget=None):
+                       local_work=None, max_pages=None, budget=None,
+                       progress=None):
         """Sync from `peer` (default: a random one) if they have a better chain.
 
         Compares by cumulative proven VDF work (tip hash breaks ties).
@@ -76,6 +77,12 @@ class Syncer:
         completion blocked its caller for minutes, and a node that is not
         draining is a node that forwards nothing, which under a stem
         silently kills whatever hop was handed to it.
+
+        progress: optional progress(height, target) called as each page
+        lands. Sync can take many seconds and nothing above this could
+        previously tell it was happening at all, so a catching-up node
+        looked identical to a stalled one. Purely for display; nothing
+        here depends on the caller doing anything with it.
 
         budget: seconds this whole pass may take. max_pages bounds the work
         we choose to do; this bounds the work a peer can make us wait for.
@@ -149,10 +156,10 @@ class Syncer:
                  peer, remote_height, local_height, fork_from)
 
         return self._fetch_and_apply(peer, local_chain, fork_from, remote_height,
-                                     apply_fn, max_pages, deadline)
+                                     apply_fn, max_pages, deadline, progress)
 
     def _fetch_and_apply(self, peer, local_chain, fork_from, remote_height, apply_fn,
-                         max_pages=None, deadline=None):
+                         max_pages=None, deadline=None, progress=None):
         """Fetch in FETCH_CHUNK-block pages, applying each page as it
         arrives instead of buffering the whole tail and applying it once at
         the end.
@@ -201,6 +208,8 @@ class Syncer:
                 log.warning("[sync] page rejected  peer=%s  from_h=%d", peer, h)
                 break
             applied_any = True
+            if progress:
+                progress(fork_from + len(tail_so_far) - 1, remote_height)
 
             if len(page) < FETCH_CHUNK:
                 break

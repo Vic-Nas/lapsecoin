@@ -466,8 +466,13 @@ class _PendingSync:
         self.chunks[chunk_idx] = payload
         if len(self.chunks) == chunk_total:
             full = b"".join(self.chunks[i] for i in range(chunk_total))
+            # Same ceiling and same reasoning as a block's, see _inflate:
+            # a sync response is the largest thing on this wire, which is
+            # exactly why it must not be able to inflate past what an
+            # uncompressed one could have been.
+            full = _inflate(full)
             try:
-                self.result = _decode(full)
+                self.result = _decode(full) if full is not None else None
             except Exception:
                 self.result = None
             self.event.set()
@@ -640,12 +645,18 @@ class UDPTransport:
         msg_id = self._new_msg_id()
         self._mark_seen(msg_id)
         targets = [self._addr_tuple(a) for a in peers]
-        if len(payload) <= MAX_CHUNK_SIZE or len(targets) == 1:
-            # Nothing to overlap: a single-datagram send does no pacing, so
-            # handing it to a pool would only add scheduling to it.
+        if len(payload) <= MAX_CHUNK_SIZE:
+            # One datagram does no pacing at all, so there is nothing to get
+            # off this thread and a pool would only add scheduling to it.
             for target in targets:
                 self._send_chunked(MT_BLOCK, msg_id, payload, target)
             return
+        # Anything paced goes to the pool even when it is going to a single
+        # peer. Overlapping peers was only half the point; the other half is
+        # that the caller here is the node loop, and a stem hop sends to
+        # exactly one peer, so gating this on peer count left the most
+        # latency-sensitive path in the system, ten sequential hops of it,
+        # still blocking that loop for the whole pacing.
         for target in targets:
             self._fanout.submit(self._send_chunked, MT_BLOCK, msg_id,
                                 payload, target)
@@ -1045,7 +1056,14 @@ class UDPTransport:
         capped_to = from_h + MAX_SYNC_BLOCKS - 1
         to_h = capped_to if not isinstance(to_h, int) else min(to_h, capped_to)
         chain  = self._get_chain_fn(from_h, to_h) if self._get_chain_fn else []
-        payload = _encode({"genesis": self.genesis_hash, "chain": chain})
+        # Compressed for the same reason blocks are, and it pays far more
+        # here: a page of 500 blocks shares so much structure that it goes
+        # to about 8% of its size, 260 chunks down to 21, which is over a
+        # second of pacing removed from every page a catching-up node
+        # fetches. This is the largest message the protocol has.
+        payload = zlib.compress(
+            _encode({"genesis": self.genesis_hash, "chain": chain}),
+            BLOCK_COMPRESS_LEVEL)
         self._send_chunked(MT_SYNC, msg_id, payload, sender)
 
     def _handle_punch_req(self, requester_addr: str, target_addr: str):
