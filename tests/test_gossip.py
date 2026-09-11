@@ -1,9 +1,10 @@
 """
 Unit tests for gossip.py (UDP transport edition)
 
-Covers: mark_seen (first call, duplicate), relay_tx (dedup via LRU cache),
-dandelion_send (stem path with peer, fluff fallback when no peers),
-broadcast_block.
+Covers the one stem/fluff mechanism both blocks and txs go through:
+mark_seen dedup, the stem rule (forward to a non-predecessor peer, fluff
+when there isn't one), and that fluff floods every peer but the sender,
+once per item hash.
 
 UDP calls are mocked via the udp object -- no network.
 """
@@ -15,8 +16,10 @@ import threading
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from gossip import Gossip, MIN_PEERS_FOR_STEM
+import gossip as gossip_mod
+from gossip import Gossip
 import state as state_mod
+import tx as tx_mod
 from tests.fixtures import make_tx, seed_balance
 from params import TICKS_PER_LAPSE
 
@@ -25,9 +28,8 @@ def make_gossip(peers=None, peer_count=None):
     pool = MagicMock()
     pool.get_all.return_value = peers or []
     pool.random.return_value = peers[0] if peers else None
-    # Default to a peer count comfortably above MIN_PEERS_FOR_STEM so
-    # existing stem-path tests aren't affected by the small-network
-    # flood-immediately behavior unless a test opts into it explicitly.
+    # No peer-count threshold exists any more: the stem rule is the same at
+    # every scale and ends itself when the graph runs out of peers.
     pool.count.return_value = peer_count if peer_count is not None else 100
     udp = MagicMock()
     gossip = Gossip(pool=pool, udp=udp)
@@ -79,98 +81,145 @@ class TestMarkSeen:
 
 
 # ---------------------------------------------------------------------------
-# 2. relay_tx -- dedup
+# 2. The stem rule
 # ---------------------------------------------------------------------------
 
-class TestRelayTx:
-    def test_relay_tx_first_time_sends(self):
-        g, pool, udp = make_gossip(peers=["1.2.3.4:9000"])
-        t = sample_tx()
-        with patch.object(g, "dandelion_send") as mock_send:
-            g.relay_tx(t)
-            mock_send.assert_called_once()
+def always_stem(monkeypatch):
+    monkeypatch.setattr(gossip_mod.random, "random", lambda: 0.0)
 
-    def test_relay_tx_duplicate_fluff_suppressed(self):
-        """Duplicate fluffs are suppressed by the seen cache; stem always forwards."""
-        g, pool, udp = make_gossip(peers=[])  # no peers → falls through to fluff
+
+def always_fluff(monkeypatch):
+    monkeypatch.setattr(gossip_mod.random, "random", lambda: 1.0)
+
+
+class TestStemRule:
+    def test_stem_goes_to_exactly_one_peer(self, monkeypatch):
+        always_stem(monkeypatch)
+        g, _, udp = make_gossip(peers=["1.2.3.4:9000", "5.6.7.8:9000"])
+        g.spread(sample_tx(), gossip_mod.KIND_TX, 'h1')
+        udp.send_tx.assert_called_once()
+        assert len(udp.send_tx.call_args.kwargs["peers"]) == 1
+        assert udp.send_tx.call_args.kwargs["stemming"] is True
+
+    def test_stem_prefers_a_peer_that_is_not_the_predecessor(self, monkeypatch):
+        always_stem(monkeypatch)
+        pred = "1.2.3.4:9000"
+        g, _, udp = make_gossip(peers=[pred, "5.6.7.8:9000"])
+        g.relay(sample_tx(), gossip_mod.KIND_TX, tx_mod.tx_hash(sample_tx()), pred, stemming=True)
+        assert udp.send_tx.call_args.kwargs["peers"] == ["5.6.7.8:9000"]
+
+    def test_dead_end_stops_here_rather_than_handing_back(self, monkeypatch):
+        """The predecessor is our only peer, so there is genuinely nowhere
+        for the item to go: it already came from the one node we could send
+        it to. The walk ends here.
+
+        This is the case that makes the originator's rework mandatory
+        rather than decorative -- the sender handed off and has no way to
+        know it landed on a leaf. See Node._retry_unconfirmed_spreads."""
+        always_stem(monkeypatch)
+        pred = "1.2.3.4:9000"
+        g, _, udp = make_gossip(peers=[pred])
+        g.relay(sample_tx(), gossip_mod.KIND_TX, tx_mod.tx_hash(sample_tx()), pred, stemming=True)
+        udp.send_tx.assert_not_called()
+
+    def test_dead_end_with_another_peer_present_goes_public(self, monkeypatch):
+        """Same rule, but here the node has somewhere to put it: the stem
+        can't continue without handing back, so it fluffs to the peers that
+        haven't seen it."""
+        always_stem(monkeypatch)
+        pred = "1.2.3.4:9000"
+        g, _, udp = make_gossip(peers=[pred])
+        g.pool.get_all.side_effect = [[pred], [pred, "5.6.7.8:9000"]]
+        g.relay(sample_tx(), gossip_mod.KIND_TX, tx_mod.tx_hash(sample_tx()), pred, stemming=True)
+        udp.send_tx.assert_called_once()
+        assert udp.send_tx.call_args.kwargs["stemming"] is False
+        assert udp.send_tx.call_args.kwargs["peers"] == ["5.6.7.8:9000"]
+
+    def test_single_peer_node_still_propagates(self, monkeypatch):
+        """A node with one peer has no anonymity to protect, and must still
+        get its own item out."""
+        always_stem(monkeypatch)
+        g, _, udp = make_gossip(peers=["1.2.3.4:9000"])
+        g.spread(sample_tx(), gossip_mod.KIND_TX, 'h1')
+        udp.send_tx.assert_called_once()
+
+    def test_no_peers_at_all_sends_nothing(self, monkeypatch):
+        always_stem(monkeypatch)
+        g, _, udp = make_gossip(peers=[])
+        g.spread(sample_tx(), gossip_mod.KIND_TX, 'h1')
+        udp.send_tx.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 3. Fluff
+# ---------------------------------------------------------------------------
+
+class TestFluff:
+    def test_fluff_floods_every_peer_except_the_sender(self, monkeypatch):
+        always_fluff(monkeypatch)
+        pred = "1.2.3.4:9000"
+        g, _, udp = make_gossip(peers=[pred, "5.6.7.8:9000", "9.9.9.9:9000"])
+        g.relay(sample_tx(), gossip_mod.KIND_TX, tx_mod.tx_hash(sample_tx()), pred, stemming=False)
+        peers = udp.send_tx.call_args.kwargs["peers"]
+        assert pred not in peers
+        assert len(peers) == 2
+        assert udp.send_tx.call_args.kwargs["stemming"] is False
+
+    def test_each_item_is_fluffed_at_most_once(self, monkeypatch):
+        always_fluff(monkeypatch)
+        g, _, udp = make_gossip(peers=["1.2.3.4:9000"])
         t = sample_tx()
-        g.dandelion_send(t, 0)   # first fluff: goes through
-        g.dandelion_send(t, 0)   # second fluff: suppressed by seen cache
+        g.relay(t, gossip_mod.KIND_TX, tx_mod.tx_hash(t), None, stemming=False)
+        g.relay(t, gossip_mod.KIND_TX, tx_mod.tx_hash(t), None, stemming=False)
         assert udp.send_tx.call_count == 1
 
-    def test_relay_tx_different_txs_both_sent(self):
-        g, pool, udp = make_gossip(peers=["1.2.3.4:9000"])
+    def test_different_items_both_fluffed(self, monkeypatch):
+        always_fluff(monkeypatch)
+        g, _, udp = make_gossip(peers=["1.2.3.4:9000"])
         s = state_mod.State()
         seed_balance(s, 0, 1000.0)
         t1 = make_tx(0, 1, TICKS_PER_LAPSE, s)
         s.apply_tx(t1)
         t2 = make_tx(0, 1, TICKS_PER_LAPSE, s)
-        with patch.object(g, "dandelion_send") as mock_send:
-            g.relay_tx(t1)
-            g.relay_tx(t2)
-            assert mock_send.call_count == 2
+        g.relay(t1, gossip_mod.KIND_TX, tx_mod.tx_hash(t1), None, stemming=False)
+        g.relay(t2, gossip_mod.KIND_TX, tx_mod.tx_hash(t2), None, stemming=False)
+        assert udp.send_tx.call_count == 2
 
-    def test_relay_tx_stems_when_enough_peers(self):
-        g, pool, udp = make_gossip(peers=["1.2.3.4:9000"], peer_count=MIN_PEERS_FOR_STEM)
-        t = sample_tx()
-        with patch.object(g, "dandelion_send") as mock_send:
-            g.relay_tx(t)
-            hops = mock_send.call_args[0][1]
-            assert hops > 0
-
-    def test_relay_tx_floods_immediately_when_too_few_peers(self):
-        """Below MIN_PEERS_FOR_STEM known peers, Dandelion's anonymity set is
-        too small to be worth the stem phase's liveness risk (a single
-        dropped stem hop silently kills the relay forever), so it should
-        flood immediately instead."""
-        g, pool, udp = make_gossip(peers=["1.2.3.4:9000"], peer_count=MIN_PEERS_FOR_STEM - 1)
-        t = sample_tx()
-        with patch.object(g, "dandelion_send") as mock_send:
-            g.relay_tx(t)
-            mock_send.assert_called_once_with(t, 0)
+    def test_a_public_item_is_never_re_stemmed(self, monkeypatch):
+        """Privacy is already spent once an item is public; re-stemming it
+        would only slow it down."""
+        always_stem(monkeypatch)
+        g, _, udp = make_gossip(peers=["1.2.3.4:9000", "5.6.7.8:9000"])
+        g.relay(sample_tx(), gossip_mod.KIND_TX, tx_mod.tx_hash(sample_tx()), None, stemming=False)
+        assert udp.send_tx.call_args.kwargs["stemming"] is False
 
 
 # ---------------------------------------------------------------------------
-# 3. dandelion_send
+# 4. Blocks take the same path as txs
 # ---------------------------------------------------------------------------
 
-class TestDandelionSend:
-    def test_stem_sends_to_single_peer(self):
-        g, pool, udp = make_gossip(peers=["1.2.3.4:9000"])
-        t = sample_tx()
-        g.dandelion_send(t, remaining_hops=3)
-        udp.send_tx.assert_called_once()
-        # stem: peers kwarg has exactly one entry
-        call_kwargs = udp.send_tx.call_args[1]
-        assert len(call_kwargs.get("peers", [])) == 1
+class TestBlocksUseTheSameMechanism:
+    def test_own_block_enters_the_stem(self, monkeypatch):
+        always_stem(monkeypatch)
+        g, _, udp = make_gossip(peers=["1.2.3.4:9000", "5.6.7.8:9000"])
+        g.spread({"height": 1, "hash": "aa" * 32}, gossip_mod.KIND_BLOCK, "aa" * 32)
+        udp.send_block.assert_called_once()
+        assert len(udp.send_block.call_args.kwargs["peers"]) == 1
+        assert udp.send_block.call_args.kwargs["stemming"] is True
 
-    def test_fluff_when_no_peers(self):
-        g, pool, udp = make_gossip(peers=[])
-        t = sample_tx()
-        g.dandelion_send(t, remaining_hops=3)
-        # Falls through to broadcast (send_tx with no peers kwarg)
-        udp.send_tx.assert_called_once()
-        call_kwargs = udp.send_tx.call_args[1] if udp.send_tx.call_args else {}
-        assert "peers" not in call_kwargs
+    def test_block_dead_end_stops_here(self, monkeypatch):
+        always_stem(monkeypatch)
+        pred = "1.2.3.4:9000"
+        g, _, udp = make_gossip(peers=[pred])
+        g.relay({"height": 1, "hash": "aa" * 32}, gossip_mod.KIND_BLOCK, 'aa' * 32, pred, stemming=True)
+        udp.send_block.assert_not_called()
 
-    def test_fluff_when_zero_hops(self):
-        g, pool, udp = make_gossip(peers=["1.2.3.4:9000"])
-        t = sample_tx()
-        g.dandelion_send(t, remaining_hops=0)
-        # Zero hops -> fluff broadcast
-        udp.send_tx.assert_called_once()
-        call_kwargs = udp.send_tx.call_args[1] if udp.send_tx.call_args else {}
-        assert "peers" not in call_kwargs
-
-
-# ---------------------------------------------------------------------------
-# 4. broadcast_block
-# ---------------------------------------------------------------------------
-
-class TestBroadcastBlock:
-    def test_broadcast_block_calls_udp(self):
-        peers = ["1.2.3.4:9000", "1.2.3.5:9000"]
-        g, pool, udp = make_gossip(peers=peers)
-        block = {"height": 1, "hash": "aa" * 32}
-        g.broadcast_block(block)
-        udp.send_block.assert_called_once_with(block)
+    def test_block_fluff_excludes_sender_and_dedups(self, monkeypatch):
+        always_fluff(monkeypatch)
+        pred = "1.2.3.4:9000"
+        g, _, udp = make_gossip(peers=[pred, "5.6.7.8:9000"])
+        blk = {"height": 1, "hash": "aa" * 32}
+        g.relay(blk, gossip_mod.KIND_BLOCK, 'aa' * 32, pred, stemming=False)
+        g.relay(blk, gossip_mod.KIND_BLOCK, 'aa' * 32, pred, stemming=False)
+        assert udp.send_block.call_count == 1
+        assert udp.send_block.call_args.kwargs["peers"] == ["5.6.7.8:9000"]

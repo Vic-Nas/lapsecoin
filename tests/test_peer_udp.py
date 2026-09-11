@@ -1,7 +1,7 @@
 """
 Unit tests for peer_udp.py's UDPTransport._dispatch, MT_TX path only.
 
-Regression test for a bug where remaining_hops/relay_type were dropped on
+Regression test for a bug where the propagation phase was dropped on
 receive, collapsing every inbound tx to an immediate fluff regardless of
 what the sender actually put on the wire -- defeating Dandelion's stem
 phase between processes. No sockets are opened; _dispatch is called
@@ -32,28 +32,27 @@ def _make_transport(on_tx):
     )
 
 
-def test_dispatch_forwards_stem_hop_info():
+def test_dispatch_forwards_the_stem_flag():
     on_tx = MagicMock()
     udp = _make_transport(on_tx)
     tx = {"from": "addr"}
-    udp._dispatch(MT_TX, 111, {"tx": tx, "remaining_hops": 3, "relay_type": "tx_stem"},
-                  ("1.2.3.4", 5000))
-    on_tx.assert_called_once_with(tx, "1.2.3.4:5000", 111, 3, "tx_stem")
+    udp._dispatch(MT_TX, 111, {"tx": tx, "stemming": True}, ("1.2.3.4", 5000))
+    on_tx.assert_called_once_with(tx, "1.2.3.4:5000", True)
 
 
-def test_dispatch_defaults_to_fluff_when_fields_absent():
+def test_dispatch_defaults_to_public_when_flag_absent():
     on_tx = MagicMock()
     udp = _make_transport(on_tx)
     tx = {"from": "addr"}
     udp._dispatch(MT_TX, 222, {"tx": tx}, ("1.2.3.4", 5000))
-    on_tx.assert_called_once_with(tx, "1.2.3.4:5000", 222, 0, "tx_fluff")
+    on_tx.assert_called_once_with(tx, "1.2.3.4:5000", False)
 
 
 def test_dispatch_dedups_by_msg_id():
     on_tx = MagicMock()
     udp = _make_transport(on_tx)
     tx = {"from": "addr"}
-    msg = {"tx": tx, "remaining_hops": 0, "relay_type": "tx_fluff"}
+    msg = {"tx": tx, "stemming": False}
     udp._dispatch(MT_TX, 333, msg, ("1.2.3.4", 5000))
     udp._dispatch(MT_TX, 333, msg, ("1.2.3.4", 5000))
     assert on_tx.call_count == 1

@@ -1,7 +1,50 @@
-"""Outbound block/tx broadcasting over UDP.
+"""Propagation: one Dandelion stem/fluff mechanism for both blocks and txs.
 
-Replaces HTTP POST gossip. Uses UDPTransport.send_block() and send_tx().
-Dandelion stem/fluff logic is unchanged; only the transport differs.
+Why one mechanism
+-----------------
+Blocks and txs are the same problem: get an item to every node without
+advertising that this node is where it came from. They used to propagate
+two different ways -- blocks epidemically at the transport layer (msg_id
+dedup, sender excluded, no stem at all, and relayed *before* anyone
+validated them), txs at this layer (hash dedup, no sender exclusion, stem
+with a peer-count cliff). Two mechanisms meant two sets of bugs and two
+places to reason about scale, for one problem.
+
+Both now go through spread()/relay() below.
+
+Dedup is by item hash, not msg_id
+---------------------------------
+The hash is what identifies the item; a msg_id is per-send, so re-sending
+the same item mints a new one and sails straight through a msg_id-based
+dedup, starting a fresh flood wave at every node that sees it. Hash dedup
+is idempotent no matter how many times an item is re-originated, which is
+what makes the rework path below safe.
+
+Stem rule, one rule at every scale
+----------------------------------
+At each hop: fluff with probability 1-STEM_CONTINUE_PROB; otherwise
+forward to a single peer that is not the one who just sent it to us; and
+if there is no such peer, fluff.
+
+That last clause is what replaces the old MIN_PEERS_FOR_STEM cliff, and
+it is deliberately not a special case: it is the same condition evaluated
+everywhere, it just fires more often on a sparse graph. Note it is a
+*preference* against the predecessor, never a hard exclusion -- a node
+with one peer cannot assume that peer has any onward link, so refusing to
+use it would strand the item rather than protect it. Fluffing early costs
+a little anonymity; dead-ending loses the item.
+
+Stem length is therefore emergent from the topology and the coin flip,
+not a configured hop count: on a 2-peer node the walk fluffs almost
+immediately by itself, on a well-connected one it keeps going.
+
+Rework
+------
+The originator holds an item it started and watches for its own flood to
+come back (see Node). No echo means the walk died somewhere -- a dropped
+datagram, a peer that went away mid-walk -- so it is re-sent. That only
+happens on failure, so its cost is proportional to the failure rate, not
+to traffic.
 """
 
 import logging
@@ -13,86 +56,114 @@ import tx as tx_mod
 
 log = logging.getLogger("ec.gossip")
 
-SEEN_TX_CACHE_SIZE = 50_000
-STEM_HOPS_MIN      = 2
-STEM_HOPS_MAX      = 8
+SEEN_CACHE_SIZE = 50_000
 
-# Below this many known peers, Dandelion's anonymity set is too small to hide
-# a tx's origin anyway (there's nowhere real to blend in), while the stem
-# phase still carries a real liveness cost: each hop is a single UDP
-# datagram with no retry, so one dropped packet silently kills the relay
-# forever with no visible symptom. Not worth paying that cost for privacy
-# that isn't there, so skip straight to flooding.
-MIN_PEERS_FOR_STEM = STEM_HOPS_MAX
+# Probability that a stem hop forwards again instead of fluffing, giving a
+# geometric stem length with mean 1/(1-q) hops where the topology allows it.
+#
+# This is a policy constant, not a derived one, and it is worth being blunt
+# about that: it trades anonymity against latency, and those two have no
+# common unit to optimise over. Nothing a node can measure locally tells it
+# the right value. What *is* derived is everything around it -- the walk
+# stops on its own when the graph runs out of peers, and the rework timeout
+# below comes from measured echo latency.
+#
+# Randomising the stop (rather than counting hops down from a fixed number)
+# is the part that actually buys anonymity: a fixed count would put the
+# originator a known distance back.
+STEM_CONTINUE_PROB = 0.9
+
+KIND_BLOCK = "block"
+KIND_TX    = "tx"
 
 
 class Gossip:
 
     def __init__(self, pool, udp):
-        self.pool     = pool
-        self.udp      = udp
-        self._seen_tx = LRUCache(maxsize=SEEN_TX_CACHE_SIZE)
-        self._lock    = threading.Lock()
+        self.pool = pool
+        self.udp  = udp
+        # Hash -> True for every item we've already put on the wire in the
+        # public (fluff) phase, so each node floods a given item exactly
+        # once no matter how many copies reach it.
+        self._seen  = LRUCache(maxsize=SEEN_CACHE_SIZE)
+        self._lock  = threading.Lock()
 
-    # ---- Public API (called by Node) ----
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
-    def broadcast_block(self, block):
-        """Send a block we built ourselves to every direct peer.
+    def spread(self, item, kind, item_hash):
+        """Start propagating an item this node originated (a block we just
+        built, or a tx we just signed). Enters the stem; see the module
+        docstring for the rule."""
+        self._forward(item, kind, item_hash, predecessor=None)
 
-        This is only the first hop. Multi-hop propagation is already
-        handled below this layer: peer_udp's MT_BLOCK dispatch calls
-        _rebroadcast() on first sight of a msg_id, forwarding to every
-        peer except the sender, so a block floods the whole network
-        epidemically off this one call. Do not add a second relay on top
-        of that -- send_block() mints a fresh msg_id, which defeats the
-        transport's msg_id dedup and starts an entirely new flood wave.
-        """
-        self.udp.send_block(block)
+    def relay(self, item, kind, item_hash, sender, stemming):
+        """Continue propagating an item that reached us from `sender`.
 
-    def relay_tx(self, tx_dict):
-        """Start a fresh Dandelion relay for a locally-submitted or fluffed tx.
+        stemming: True if it arrived still in the private phase, in which
+        case we apply the stem rule again; False if it arrived public, in
+        which case we simply flood it onward (privacy is already spent, and
+        re-stemming a public item would only slow it down)."""
+        if stemming:
+            self._forward(item, kind, item_hash, predecessor=sender)
+        else:
+            self._fluff(item, kind, item_hash, exclude=sender)
 
-        Skips the private stem phase entirely below MIN_PEERS_FOR_STEM known
-        peers and floods immediately instead -- see MIN_PEERS_FOR_STEM.
-        """
-        if self.pool.count() < MIN_PEERS_FOR_STEM:
-            self.dandelion_send(tx_dict, 0)
+    def force_fluff(self, item, kind, item_hash):
+        """Flood an item we already put on the wire once, ignoring the seen
+        cache. Only for the rework path (Node._retry_unconfirmed_spreads):
+        our own first send is what marked this hash, which is exactly what
+        would make the resend we're trying to force a silent no-op."""
+        peers = self.pool.get_all()
+        if not peers:
             return
-        hops = random.randint(STEM_HOPS_MIN, STEM_HOPS_MAX)
-        self.dandelion_send(tx_dict, hops)
+        log.debug("[gossip] re-flooding %s to %d peers", kind, len(peers))
+        self._send(item, kind, peers=peers, stemming=False)
 
     def mark_seen(self, h):
-        """Mark h as seen. Returns True if already seen, False if new."""
+        """Mark h as already handled. Returns True if it already was."""
         with self._lock:
-            if h in self._seen_tx:
+            if h in self._seen:
                 return True
-            self._seen_tx[h] = True
+            self._seen[h] = True
             return False
 
-    # ---- Dandelion stem/fluff ----
+    # ------------------------------------------------------------------
+    # Stem / fluff
+    # ------------------------------------------------------------------
 
-    def dandelion_send(self, tx_dict, remaining_hops):
-        """Forward tx along the Dandelion stem or fluff it.
-
-        Stem (remaining_hops > 0): send to one random peer with the countdown.
-        Skips the seen cache so small networks can complete the stem even with
-        only 2 nodes — the countdown bounds any loop.
-
-        Fluff (remaining_hops == 0 or no peers): broadcast to all peers.
-        Checks seen cache here to prevent broadcast storms.
-        """
-        if remaining_hops > 0:
-            peer = self.pool.random()
-            if peer:
-                log.debug("[gossip] dandelion stem  hops_left=%d", remaining_hops)
-                self.udp.send_tx(tx_dict, peers=[peer],
-                                 remaining_hops=remaining_hops - 1)
+    def _forward(self, item, kind, item_hash, predecessor):
+        """One stem hop, or a fluff if the rule says to stop here."""
+        if random.random() < STEM_CONTINUE_PROB:
+            peer = self._stem_peer(predecessor)
+            if peer is not None:
+                log.debug("[gossip] stem %s to %s", kind, peer)
+                self._send(item, kind, peers=[peer], stemming=True)
                 return
-        # Fluff: broadcast to all, but only once per tx
-        h = tx_mod.tx_hash(tx_dict)
-        with self._lock:
-            if h in self._seen_tx:
-                return
-            self._seen_tx[h] = True
-        log.debug("[gossip] dandelion fluff")
-        self.udp.send_tx(tx_dict, remaining_hops=0)
+            # No peer other than whoever handed it to us. Continuing would
+            # mean handing it straight back, so this is where the walk ends.
+        self._fluff(item, kind, item_hash, exclude=predecessor)
+
+    def _stem_peer(self, predecessor):
+        """One random peer that isn't the predecessor, or None if the only
+        peers we have are the predecessor (or none at all)."""
+        peers = [p for p in self.pool.get_all() if p != predecessor]
+        return random.choice(peers) if peers else None
+
+    def _fluff(self, item, kind, item_hash, exclude=None):
+        """Public phase: flood to every peer except whoever sent it to us,
+        at most once per item hash."""
+        if self.mark_seen(item_hash):
+            return
+        peers = [p for p in self.pool.get_all() if p != exclude]
+        if not peers:
+            return
+        log.debug("[gossip] fluff %s to %d peers", kind, len(peers))
+        self._send(item, kind, peers=peers, stemming=False)
+
+    def _send(self, item, kind, peers, stemming):
+        if kind == KIND_BLOCK:
+            self.udp.send_block(item, peers=peers, stemming=stemming)
+        else:
+            self.udp.send_tx(item, peers=peers, stemming=stemming)

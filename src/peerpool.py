@@ -63,7 +63,7 @@ class PeerPool:
         self._max_peers = max_peers if max_peers is not None else MAX_PEERS
         self._peers     = {}          # addr -> last_seen (wall clock)
         self._fails     = {}          # addr -> {"strikes": int, "cooldown_until": monotonic}
-        self._info      = {}          # addr -> {"height": int|None, "wallet": str, "inferred_wallet": str}
+        self._info      = {}          # addr -> {"height": int|None, "wallet": str}
         self._lock      = threading.Lock()
 
     # ---- Core operations ----
@@ -113,28 +113,13 @@ class PeerPool:
         """Record the outcome of an out-of-band HTTP reachability probe
         against addr's web UI (the actual probing happens elsewhere -- see
         the module docstring). No-op for an address that isn't currently
-        tracked, same guard as update_info/note_relayed_builder."""
+        tracked, same guard as update_info."""
         with self._lock:
             if addr not in self._peers:
                 return
             self._info.setdefault(addr, {})["http_reachable"] = bool(ok)
             self._info[addr]["http_checked_at"] = (
                 checked_at if checked_at is not None else time.time())
-
-    def note_relayed_builder(self, addr, builder):
-        """Record the builder address of the most recent block relayed by
-        addr, as a placeholder for peers we don't have a confirmed wallet
-        from yet. This is only an inference, never a substitute for
-        update_info's confirmed wallet: addr may simply be forwarding a
-        block someone else built, not the one who built it. Never
-        overwrites a confirmed wallet -- callers/UI should still show this
-        as unconfirmed."""
-        if not builder:
-            return
-        with self._lock:
-            if addr not in self._peers:
-                return
-            self._info.setdefault(addr, {})["inferred_wallet"] = builder
 
     def touch(self, addr):
         """Update last-seen timestamp and clear strikes on successful contact."""
@@ -201,15 +186,16 @@ class PeerPool:
             return list(self._peers.keys())
 
     def snapshot(self):
-        """Return [(addr, last_seen, active, height, wallet, inferred_wallet,
-        version, http_reachable)] for display. active is False while a peer
+        """Return [(addr, last_seen, active, height, wallet, version,
+        http_reachable)] for display. active is False while a peer
         is in cooldown after repeated failures. height/wallet/version are the
         last-known confirmed values from a GETINFO exchange (see
         update_info), or (None, "", "") if none has completed yet.
-        inferred_wallet is a best-effort fallback from the builder of the
-        last block relayed by that peer (see note_relayed_builder) -- only
-        meaningful when wallet is empty, and never confirmed, since a peer
-        may just be forwarding someone else's block. http_reachable is
+        There is deliberately no guess at a peer's wallet from blocks it
+        relays: under the stem phase the peer handing us a block is
+        specifically not meant to be its builder (see gossip.py), so such a
+        guess would be both wrong and a re-leak of exactly what the stem
+        exists to hide. http_reachable is
         True/False from the most recent HTTP probe (see set_http_reachable)
         if one completed within the last HTTP_REACHABLE_TTL seconds,
         otherwise None -- stale or never-checked, treated the same as
@@ -232,7 +218,6 @@ class PeerPool:
                     now_mono >= self._fails.get(addr, {}).get("cooldown_until", 0.0),
                     info.get("height"),
                     info.get("wallet", ""),
-                    info.get("inferred_wallet", ""),
                     info.get("version", ""),
                     http_reachable,
                 ))

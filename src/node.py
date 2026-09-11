@@ -2,13 +2,14 @@
 
 One cycle:
   1. drain queue          inbound txs and blocks from net_in_q
-  2. sync                pull a better chain from a random peer
-  3. vdf.evaluate()      blocks ~120s, re-checking sync every
-                         SYNC_POLL_INTERVAL_SECONDS while waiting
-  4. assemble + broadcast
-  5. drain queue (5s)    collect peer blocks
-  6. pick winner         first valid peer block received, else own candidate
-  7. commit              swap ChainState, persist, publish view
+  2. sync, if triggered   only on evidence we're behind, or on silence
+  3. vdf.evaluate()       ~120s, draining and re-checking triggers throughout,
+                          abandoned early if the settle window says it can no
+                          longer matter
+  4. assemble + spread    own candidate enters propagation (gossip.py)
+  5. settle window        wait out stragglers, bounded
+  6. pick winner          lowest vdf_output among valid same-height candidates
+  7. commit               swap ChainState, persist, publish view
 
 Flask threads read node.view (a NodeView snapshot). The node loop is the
 sole writer; every mutation publishes a new snapshot atomically.
@@ -26,6 +27,7 @@ import time
 
 import block as block_mod
 import crypto
+import gossip as gossip_mod
 import mempool as mempool_mod
 import tx as tx_mod
 import vdf as vdf_mod
@@ -36,28 +38,45 @@ from storage import Storage
 log = logging.getLogger("ec.node")
 _rng = _secrets.SystemRandom()
 
-SYNC_EVERY_N_CYCLES = 1   # check every cycle; forks are common at 2-min blocks
+# Sync is event-driven, not scheduled. Two things can tell a node it is
+# behind, and only two:
+#
+#   1. An inbound block at a height above our tip. This already reaches
+#      every node for free, carried by propagation, and it names a peer
+#      who has the chain. See _handle_inbound_block.
+#   2. Silence. If no block arrives for meaningfully longer than the pace
+#      the chain itself is running at, either the network stalled or we
+#      are isolated -- and no inbound block is ever going to tell us that.
+#
+# Polling on a fixed interval was a way of compensating for throwing (1)
+# away. It scaled badly for what it bought: picking a peer at random, a
+# node with k of N peers ahead needs ~N/k polls to stumble onto one, so
+# detection got *slower* as the network grew, while the cost of each poll
+# grew with chain length.
+#
+# The silence threshold is this multiple of the chain's own recent median
+# block interval (block_mod.block_time_stats, measured, not assumed), so
+# it tracks whatever pace the network is actually running at rather than
+# a hardcoded seconds value. Above 1 so ordinary block-to-block jitter
+# doesn't read as silence.
+SILENCE_MULTIPLE = 3.0
 
-# How often to re-check for a better peer chain *during* the ~120-200s VDF
-# wait, not just once at cycle start. Without this, a node that's badly
-# behind can only close its gap once per full mining cycle -- a lagging
-# peer would need many multi-minute cycles to catch up even though the
-# actual data transfer takes a couple of seconds. This is still called
-# from the single node-loop thread (never a separate thread): _drain_queue
-# and friends assert they run on that thread, and mempool/state are
-# documented single-writer, so interleaving more checks into the existing
-# wait loop is safe where spawning a real background thread would not be.
-SYNC_POLL_INTERVAL_SECONDS = 10
+# Fallback for the silence threshold before the chain is long enough to
+# have a median interval of its own (fresh node, first blocks).
+SILENCE_FALLBACK_SECONDS = 600.0
 
-# Timeout for the mid-wait polls' initial GETINFO probe. Deliberately much
-# shorter than UDPTransport.get_info's own 8s default: this probe repeats
-# roughly every SYNC_POLL_INTERVAL_SECONDS for the whole ~120-200s wait, and
-# a peer that's gone unresponsive (but hasn't yet been struck/evicted) would
-# otherwise be able to eat most of that responsive-wait budget, one 8s block
-# at a time, on the single node-loop thread this all runs on. In the common
-# case (peer alive, already in sync) the real round trip is milliseconds, so
-# this only matters for the failure case it's meant to bound.
-SYNC_POLL_INFO_TIMEOUT_SECONDS = 2.0
+# GETINFO probe timeout for a sync attempt. The probe is one round trip
+# and the real one takes milliseconds; this only bounds the case where a
+# peer has gone quiet but hasn't been struck yet.
+SYNC_INFO_TIMEOUT_SECONDS = 2.0
+
+# Echo deadline before a node has measured any of its own round trips (see
+# Node._echo_deadline_seconds). Only ever used on a node that has just
+# started and originated something before seeing anything come back, and
+# only decides how long to wait before re-sending, so erring long costs a
+# delayed retry and erring short costs one redundant flood.
+ECHO_BOOTSTRAP_SECONDS = 10.0
+ECHO_MIN_SECONDS       = 2.0
 
 # How often to log that the VDF is still running. Without this, the default
 # INFO log goes quiet for the entire ~2-3 minute wait between "[vdf] starting"
@@ -137,13 +156,38 @@ class Node:
         self._kek         = None
         self._loop_thread = None
         self._cycle_count = 0
-        # tx_hash -> monotonic time of the last (re)relay, for txs this node
-        # itself originated. The private stem hop is a single UDP datagram
-        # with no retry (see gossip.py), so a dropped packet silently kills
-        # propagation with no visible symptom until the tx expires from the
-        # mempool unconfirmed. _retry_stuck_local_txs() re-floods our own
-        # submissions that are still pending after RELAY_RETRY_SECONDS.
-        self._local_pending = {}
+        # Set by _handle_inbound_block when a peer shows evidence of a
+        # higher chain: the address to sync from next. Evidence, not proof
+        # -- see that method. Consumed and cleared by _run_cycle.
+        self._sync_hint = None
+
+        # item_hash -> (item, kind, spread_at) for things we originated and
+        # have not yet seen come back from anyone. A stem hands an item to a
+        # single peer and forgets it; if that peer is a dead end (its only
+        # link is back to us) or the datagram is simply lost, the item stops
+        # there and nobody else ever hears about it. We can't detect either
+        # case from the send side, but we can notice that it never came
+        # back -- see _retry_unconfirmed_spreads. This is what makes the
+        # stem safe on a graph we don't get to see.
+        self._unconfirmed_spreads = {}
+
+        # Measured seconds between spreading something and seeing it return
+        # from a peer. The retry deadline comes from these rather than a
+        # guessed number; ECHO_BOOTSTRAP_SECONDS covers the window before
+        # this node has measured any of its own.
+        self._echo_seconds = collections.deque(maxlen=50)
+
+        # When we last saw any block at all. Silence beyond the chain's own
+        # measured pace is the only other thing worth polling on: it means
+        # either the network stalled or we're isolated, and both are cases
+        # no inbound block will ever tell us about.
+        self._last_block_seen = time.monotonic()
+
+        # When we last polled *because* of silence, kept separate from
+        # _last_block_seen so a poll that finds nothing doesn't read as a
+        # block having arrived. Bounds silence to one poll per threshold
+        # rather than one per loop tick.
+        self._last_silence_poll = 0.0
 
         # height -> (State snapshot, cumulative_iterations) for the last
         # RECENT_STATE_CACHE_SIZE heights this node has actually committed.
@@ -373,32 +417,10 @@ class Node:
             log.debug("[tx] mempool add failed  reason=%s  from=%s", h,
                       tx_dict.get("from", "?")[:24])
             return False, h
-        self.gossip.relay_tx(tx_dict)
-        self._local_pending[h] = time.monotonic()
+        self._spread(tx_dict, gossip_mod.KIND_TX, h)
         log.info("[tx] accepted  hash=%s  from=%s", h[:12],
                  tx_dict.get("from", "?")[:24])
         return True, h
-
-    RELAY_RETRY_SECONDS = 180  # ~1.5x the VDF block target
-
-    def _retry_stuck_local_txs(self):
-        """Re-flood (skipping the stem phase) any tx we originated that's
-        still pending after RELAY_RETRY_SECONDS -- see _local_pending."""
-        now = time.monotonic()
-        for h in list(self._local_pending):
-            tx_dict = self.mempool.get(h)
-            if tx_dict is None:
-                del self._local_pending[h]  # confirmed or pruned
-                continue
-            if now - self._local_pending[h] >= self.RELAY_RETRY_SECONDS:
-                log.info("[tx] re-flooding stuck local tx  hash=%s", h[:12])
-                # Straight to the UDP layer, bypassing gossip's seen-tx
-                # dedup cache -- the first send already marked this hash
-                # seen (that's what stopped it looping as a fluff storm),
-                # which would otherwise make dandelion_send() silently
-                # no-op on exactly the resend we're trying to force here.
-                self.gossip.udp.send_tx(tx_dict, remaining_hops=0)
-                self._local_pending[h] = now
 
     def submit_tx_from_api(self, tx_dict, timeout=5):
         """Thread-safe bridge: enqueue tx, block until the loop replies."""
@@ -457,13 +479,9 @@ class Node:
         # arming the settle window for it -- see _consider_inbound_block,
         # called on these again once `cs` is known below.
         pre_cycle_blocks = self._drain_queue()
-        self._retry_stuck_local_txs()
+        self._retry_unconfirmed_spreads()
 
-        if self._cycle_count % SYNC_EVERY_N_CYCLES == 0:
-            self.syncer.check_and_sync(
-                self.cs.chain,
-                lambda chain: self.apply_better_chain(chain)[0],
-            )
+        self._sync_if_triggered()
         cs = self.cs   # local alias; can change under sync
         pruned = self.mempool.prune_stale(cs.state)
         log.info("[vdf] starting height=%d  tip=%s  peers=%d  mempool=%d  pruned=%d",
@@ -503,8 +521,7 @@ class Node:
             _fut = _pool.submit(
                 vdf_mod.evaluate,
                 block_mod.vdf_challenge(cs.tip["hash"], self.addr), iterations, handle)
-            last_sync_check = time.monotonic()
-            last_heartbeat  = vdf_start
+            last_heartbeat = vdf_start
             while True:
                 now = time.monotonic()
                 if _fut.done():
@@ -522,6 +539,7 @@ class Node:
                 if own_finished_early and (settle_deadline is None or now >= settle_deadline):
                     break
 
+                self._retry_unconfirmed_spreads()
                 new_blocks = self._drain_queue(timeout=1)
                 for blk in new_blocks:
                     settle_deadline = self._consider_inbound_block(
@@ -535,23 +553,15 @@ class Node:
                     self.status_line = (f"computing VDF for block {cs.height + 1} "
                                         f"({elapsed:.0f}s elapsed)")
                     last_heartbeat = now
-                # Re-check for a better peer chain periodically instead of only
-                # once at cycle start, so a lagging node converges in roughly
-                # this interval rather than waiting a full mining cycle per
-                # attempt. Still runs on this same thread -- see
-                # SYNC_POLL_INTERVAL_SECONDS's comment for why that matters.
-                if now - last_sync_check >= SYNC_POLL_INTERVAL_SECONDS:
-                    if self.syncer.check_and_sync(
-                        self.cs.chain,
-                        lambda chain: self.apply_better_chain(chain)[0],
-                        info_timeout=SYNC_POLL_INFO_TIMEOUT_SECONDS,
-                    ):
-                        # A strictly longer chain was just adopted -- this
-                        # cycle's candidate is provably dead already (see
-                        # the self.cs-is-not-cs check below), no reason to
-                        # let the VDF keep running to find that out later.
-                        handle.cancel()
-                    last_sync_check = now
+                # Mid-wait sync happens on evidence, not on a timer: a
+                # block from a height above ours landed in the drain above
+                # and set the hint. Nothing arriving means nothing to do.
+                if self._sync_if_triggered():
+                    # A strictly longer chain was just adopted -- this
+                    # cycle's candidate is provably dead already (see the
+                    # self.cs-is-not-cs check below), no reason to let the
+                    # VDF keep running to find that out later.
+                    handle.cancel()
 
             own_cancelled = handle._cancelled
             if not own_cancelled:
@@ -609,7 +619,7 @@ class Node:
         if not ok:
             log.error("[vdf] self-produced block failed validation: %s", err)
             return
-        self.gossip.broadcast_block(candidate)
+        self._spread(candidate, gossip_mod.KIND_BLOCK, candidate["hash"])
 
         # Drain anything that arrived just as VDF completed, then pick winner.
         # All peer candidates should already be in accumulated_blocks since VDFs
@@ -728,13 +738,10 @@ class Node:
         self.mempool.remove_many(confirmed)
         self.view = NodeView(self.cs)
 
-        if relay:
-            # Peer-won block: broadcast it now. Our own candidate was already
-            # broadcast in _run_cycle before the drain window; relay=False there.
-            try:
-                self.gossip.broadcast_block(blk)
-            except Exception:
-                log.exception("[commit] relay broadcast failed height=%d", blk["height"])
+        # Nothing is propagated from here. A peer block was already passed
+        # on when it arrived (_handle_inbound_block), and our own candidate
+        # when we built it -- re-sending at commit time would just be a
+        # second copy of something the network already has.
 
         log.info("[commit] height=%d  hash=%s  tx=%d  builder=%s",
                  blk["height"], blk["hash"][:12], len(blk["transactions"]),
@@ -766,7 +773,7 @@ class Node:
         """Dispatch one queue message."""
         t = msg.get("type")
         if t == "block":
-            block_out.append(msg["block"])
+            self._handle_inbound_block(msg, block_out)
         elif t == "submit_tx":
             msg["reply"].put(self.submit_tx(msg["tx"]))
         elif t == "tx":
@@ -778,40 +785,205 @@ class Node:
             except (TypeError, ValueError) as e:
                 msg["reply"].put((False, str(e)))
 
-    def _handle_inbound_tx(self, msg):
-        """Route an inbound tx message.
+    def _spread(self, item, kind, item_hash):
+        """Originate an item and remember it until we see it come back."""
+        self._unconfirmed_spreads[item_hash] = (item, kind, time.monotonic())
+        self.gossip.spread(item, kind, item_hash)
 
-        Stem txs (Dandelion relay) are forwarded without validation; we are
-        not the ultimate recipient, just a relay node. Fluff txs are validated
-        and added to the mempool if new and valid.
-        """
-        tx_dict   = msg["tx"]
-        sender    = tx_dict.get("from", "?")[:24]
-        remaining = msg.get("remaining_hops", 0)
-        if msg.get("relay_type") == "tx_stem" and remaining > 0:
-            log.debug("[tx] stem relay  hops_remaining=%d  from=%s", remaining, sender)
-            self.gossip.dandelion_send(tx_dict, remaining)
+    def _note_echo(self, item_hash):
+        """An item we originated came back from a peer, which is proof it
+        actually got out. Also the only measurement of how long that takes
+        that this node can make for itself."""
+        entry = self._unconfirmed_spreads.pop(item_hash, None)
+        if entry is None:
             return
+        self._echo_seconds.append(time.monotonic() - entry[2])
+
+    def _echo_deadline_seconds(self):
+        """How long to wait for an echo before assuming the walk died.
+
+        p95 of this node's own measured echo times once it has enough of
+        them, so it tracks the network it is actually on. Doubling that
+        leaves room for the ordinary tail without re-sending on every
+        slightly-slow round."""
+        if len(self._echo_seconds) < 5:
+            return ECHO_BOOTSTRAP_SECONDS
+        ordered = sorted(self._echo_seconds)
+        p95 = ordered[max(0, int(len(ordered) * 0.95) - 1)]
+        return max(ECHO_MIN_SECONDS, p95 * 2)
+
+    def _retry_unconfirmed_spreads(self):
+        """Re-send anything we originated that never came back.
+
+        The retry floods directly instead of stemming again. The first
+        attempt already spent what privacy a stem can buy, and by this point
+        the walk has demonstrably failed once: another private hand-off
+        would risk the same silent death, and for a block that means losing
+        the whole evaluation. Delivery wins on the retry.
+        """
+        deadline = self._echo_deadline_seconds()
+        now = time.monotonic()
+        for h in list(self._unconfirmed_spreads):
+            item, kind, spread_at = self._unconfirmed_spreads[h]
+            if now - spread_at < deadline:
+                continue
+            log.info("[gossip] %s %s never came back after %.1fs, flooding",
+                     kind, h[:12], now - spread_at)
+            del self._unconfirmed_spreads[h]
+            self.gossip.force_fluff(item, kind, h)
+
+    def _silence_threshold(self):
+        """How long without any block counts as silence, in seconds: a
+        multiple of the pace the chain is actually running at, measured
+        from its own timestamps rather than assumed."""
+        chain = self.cs.chain
+        stats = block_mod.block_time_stats(chain, len(chain) - 1)
+        if stats is None or not stats["median"]:
+            return SILENCE_FALLBACK_SECONDS
+        return stats["median"] * SILENCE_MULTIPLE
+
+    def _sync_if_triggered(self):
+        """Sync only when something says to. Returns True if a better chain
+        was adopted.
+
+        Two triggers, in priority order:
+
+        - A hint from an inbound block above our tip, which also names the
+          peer that has it, so we ask that peer rather than guessing.
+        - Silence past _silence_threshold(), the only case no inbound block
+          can ever report. Here there is nobody to ask in particular, so we
+          fall back to the highest peer we know of.
+
+        Either way the peer's answer is validated before it is believed, so
+        a lying hint costs one failed attempt against the liar, nothing
+        more. This is also why a claimed height is never a trigger on its
+        own: claims are cheap, blocks are not.
+        """
+        assert threading.current_thread() is self._loop_thread
+        peer = self._sync_hint
+        self._sync_hint = None
+
+        if peer is None:
+            now = time.monotonic()
+            threshold = self._silence_threshold()
+            if now - self._last_block_seen < threshold:
+                return False
+            if now - self._last_silence_poll < threshold:
+                return False
+            peer = self._best_known_peer()
+            if peer is None:
+                return False
+            log.info("[sync] no block for %.0fs, polling %s",
+                     now - self._last_block_seen, peer)
+            self._last_silence_poll = now
+
+        return self.syncer.check_and_sync(
+            self.cs.chain,
+            lambda chain: self.apply_better_chain(chain)[0],
+            peer=peer,
+            info_timeout=SYNC_INFO_TIMEOUT_SECONDS,
+        )
+
+    def _best_known_peer(self):
+        """The peer we last saw claiming the highest chain, else any peer.
+
+        The pool already records every peer's claimed height from each
+        INFO exchange; picking with it instead of uniformly at random is
+        free. It stays a claim, never a conclusion -- it only decides who
+        is worth one round trip.
+        """
+        best, best_height = None, -1
+        for row in self.pool.snapshot():
+            addr, _last_seen, active, height = row[0], row[1], row[2], row[3]
+            if not active or height is None:
+                continue
+            if height > best_height:
+                best, best_height = addr, height
+        return best if best is not None else self.pool.random()
+
+    def _handle_inbound_block(self, msg, block_out):
+        """Single choke point for every inbound block: decide what it proves,
+        propagate it if we can vouch for it, and note who to sync from if it
+        shows we're behind.
+
+        Three cases, by what we can actually establish:
+
+        - Extends our tip. Fully validatable right here, so validate and
+          propagate (gossip.relay_block), and hand it to the cycle, which
+          re-checks it against the tip it actually raced for.
+
+        - Further ahead than our tip+1. We cannot validate it -- we don't
+          have its parents -- so it is evidence, not proof, and we must not
+          relay it: passing on something we can't vouch for would let anyone
+          spend the whole network's bandwidth for one crafted datagram.
+          What it does do is tell us who to ask. Being lied to costs exactly
+          one sync attempt against that peer, which then fails validation on
+          its own merits, so believing the hint is never what decides truth.
+
+        - At or below our tip. Nothing to learn, nothing to pass on.
+        """
+        blk      = msg["block"]
+        sender   = msg.get("sender")
+        stemming = msg.get("stemming", False)
+        block_out.append(blk)
+
+        cs     = self.cs
+        height = blk.get("height")
+        if not isinstance(height, int):
+            return
+
+        self._last_block_seen = time.monotonic()
+        blk_hash = blk.get("hash")
+        if blk_hash:
+            self._note_echo(blk_hash)
+
+        if height == cs.height + 1 and blk.get("previous_hash") == cs.tip["hash"]:
+            ok, err = block_mod.validate(blk, cs.state.snapshot(), cs.chain)
+            if not ok:
+                log.debug("[block] inbound rejected: %s", err)
+                return
+            self.gossip.relay(blk, gossip_mod.KIND_BLOCK, blk["hash"],
+                              sender, stemming=stemming)
+        elif height > cs.height and sender:
+            log.info("[sync] peer %s has height %d, we're at %d",
+                     sender, height, cs.height)
+            self._sync_hint = sender
+
+    def _handle_inbound_tx(self, msg):
+        """Route an inbound tx: validate, admit to the mempool, propagate.
+
+        A tx still in the private phase is forwarded without being admitted
+        here -- we're a relay for it, not its destination -- but it is still
+        validated first. Relaying something unvalidated would let anyone
+        spend our bandwidth (and every downstream peer's) for the price of
+        one crafted datagram.
+        """
+        tx_dict  = msg["tx"]
+        origin   = tx_dict.get("from", "?")[:24]
+        sender   = msg.get("sender")
+        stemming = msg.get("stemming", False)
+
+        tx_hash = tx_mod.tx_hash(tx_dict)
+        self._note_echo(tx_hash)
+
         ok, err = self._validate_for_mempool(tx_dict)
         if not ok:
-            log.debug("[tx] inbound rejected  reason=%s  from=%s", err, sender)
+            log.debug("[tx] inbound rejected  reason=%s  from=%s", err, origin)
             return
+
+        if stemming:
+            log.debug("[tx] stem relay  from=%s", origin)
+            self.gossip.relay(tx_dict, gossip_mod.KIND_TX, tx_hash,
+                              sender, stemming=True)
+            return
+
         added, h_or_err = self.mempool.add(tx_dict)
         if added:
-            log.debug("[tx] inbound accepted  hash=%s  from=%s", h_or_err[:12], sender)
-            # Continue the fluff, never re-stem: this tx already reached the
-            # public phase (either it arrived tagged tx_fluff, or as the
-            # stem's last hop -- see the tx_stem branch above), so privacy
-            # is already spent and there's nothing left to gain from a fresh
-            # private stem here. relay_tx() would re-roll stem-vs-flood from
-            # this node's own peer count, which on a well-connected node
-            # (>= MIN_PEERS_FOR_STEM) silently turns one flood step into
-            # another single-hop, zero-retry private relay -- exactly the
-            # failure mode this is meant to avoid. dandelion_send(tx, 0)
-            # floods to all peers (deduped via the seen-tx cache).
-            self.gossip.dandelion_send(tx_dict, 0)
+            log.debug("[tx] inbound accepted  hash=%s  from=%s", h_or_err[:12], origin)
+            self.gossip.relay(tx_dict, gossip_mod.KIND_TX, tx_hash,
+                              sender, stemming=False)
         else:
-            log.debug("[tx] inbound duplicate  from=%s", sender)
+            log.debug("[tx] inbound duplicate  from=%s", origin)
 
     # ------------------------------------------------------------------
     # Chain sync / reorg
@@ -950,7 +1122,7 @@ class Node:
             if ok:
                 added, _ = self.mempool.add(t)
                 if added:
-                    self.gossip.dandelion_send(t, 0)
+                    self._spread(t, gossip_mod.KIND_TX, tx_mod.tx_hash(t))
 
     def _salvage_fork_txs(self, fork_point, tail):
         """Re-add unconfirmed, still-valid txs from a rejected fork into the

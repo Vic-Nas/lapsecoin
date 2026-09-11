@@ -197,9 +197,9 @@ class UptimeRewarder:
     def _active_peer_wallets(self):
         now = time.time()
         wallets = set()
-        for addr, last_seen, active, height, wallet, inferred_wallet, version, http_reachable \
+        for addr, last_seen, active, height, wallet, version, http_reachable \
                 in self.pool.snapshot():
-            w = wallet or inferred_wallet
+            w = wallet
             if w and now - last_seen <= ACTIVE_WINDOW_S:
                 wallets.add(w)
         return wallets

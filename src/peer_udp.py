@@ -42,8 +42,11 @@ Public interface
   .start()                    bind socket, start recv loop thread
   .stop()
   .ping(addr)                 fire-and-forget
-  .send_block(block)          broadcast to all peers
-  .send_tx(tx, peers=None)    send tx (dandelion stem or broadcast)
+  .send_block(block, peers, stemming)  put a block on the wire
+  .send_tx(tx, peers, stemming)       put a tx on the wire
+     Neither relays on the receiver's behalf: what to forward, to whom,
+     and whether it is still private is decided in gossip.py after Node
+     has validated the item.
   .request_sync(addr, from_h) request chain from peer, returns list|None
   .send_peers(addr, peers)    send peer list to addr
   .punch_via(relay, target)   ask relay to coordinate punch to target
@@ -407,7 +410,7 @@ class UDPTransport:
         self._sync_lock   = threading.Lock()
         # (target_addr, msg_id) -> {"chunks": {idx: bytes}, "acked": set(),
         # "msg_type": int, "event": Event}. Keyed by target too, not just
-        # msg_id, because a broadcast (send_block, _rebroadcast) reuses one
+        # msg_id, because a broadcast (send_block) reuses one
         # msg_id across many targets -- keying by msg_id alone would let
         # concurrent targets clobber each other's ack tracking.
         self._pending_chunked_sends: dict[tuple, dict] = {}
@@ -530,33 +533,36 @@ class UDPTransport:
             self._pong_events.pop(msg_id, None)
         return None
 
-    def send_block(self, block: dict):
-        """Broadcast block to all peers."""
-        peers = self._pool.get_all()
+    def send_block(self, block: dict, peers=None, stemming: bool = False):
+        """Send a block to `peers` (default: all).
+
+        stemming marks the private phase, so the receiver knows to apply the
+        stem rule rather than treat it as public. Propagation decisions live
+        entirely in gossip.py -- this layer only puts bytes on the wire, and
+        deliberately does not relay on the receiver's behalf (see the
+        MT_BLOCK branch in _dispatch)."""
+        if peers is None:
+            peers = self._pool.get_all()
         if not peers:
             return
-        log.debug("[udp] send_block height=%s to %d peers", block.get("height"), len(peers))
-        payload = _encode({"genesis": self.genesis_hash, "block": block})
+        log.debug("[udp] send_block height=%s to %d peers stem=%s",
+                  block.get("height"), len(peers), stemming)
+        payload = _encode({"genesis": self.genesis_hash, "block": block,
+                           "stemming": stemming})
         msg_id = self._new_msg_id()
         self._mark_seen(msg_id)
         for addr in peers:
             self._send_chunked(MT_BLOCK, msg_id, payload,
                                self._addr_tuple(addr))
 
-    def send_tx(self, tx: dict, peers=None, remaining_hops=0):
-        """Send TX to specific peers or broadcast.
-
-        remaining_hops > 0: stem phase — receiver continues forwarding.
-        remaining_hops == 0: fluff phase — receiver validates and adds to mempool.
-        """
+    def send_tx(self, tx: dict, peers=None, stemming: bool = False):
+        """Send a tx to `peers` (default: all). stemming as in send_block."""
         if peers is None:
             peers = self._pool.get_all()
         if not peers:
             return
-        msg = {"genesis": self.genesis_hash, "tx": tx, "remaining_hops": remaining_hops}
-        if remaining_hops > 0:
-            msg["relay_type"] = "tx_stem"
-        payload = _encode(msg)
+        payload = _encode({"genesis": self.genesis_hash, "tx": tx,
+                           "stemming": stemming})
         msg_id = self._new_msg_id()
         self._mark_seen(msg_id)
         for addr in peers:
@@ -838,17 +844,21 @@ class UDPTransport:
                 if block:
                     log.debug("[udp] recv_block height=%s from=%s",
                               block.get("height"), sender_addr)
-                    self._on_block(block, sender_addr)
-                    self._rebroadcast(MT_BLOCK, msg_id, data, exclude=sender_addr)
+                    # Handed up, never relayed from here. Relaying at this
+                    # layer would mean forwarding a block nobody has
+                    # validated yet, and would bypass the stem/fluff rule
+                    # entirely. Propagation is gossip.py's decision, taken
+                    # after Node validates -- see gossip.relay_block.
+                    self._on_block(block, sender_addr,
+                                   bool(data.get("stemming", False)))
 
         elif msg_type == MT_TX:
             if self._is_new(msg_id):
                 self._pool.touch(sender_addr)
                 tx = data.get("tx")
                 if tx:
-                    remaining_hops = data.get("remaining_hops", 0)
-                    relay_type = data.get("relay_type", "tx_fluff")
-                    self._on_tx(tx, sender_addr, msg_id, remaining_hops, relay_type)
+                    self._on_tx(tx, sender_addr,
+                                bool(data.get("stemming", False)))
 
         elif msg_type == MT_GETSYNC:
             self._handle_getsync(msg_id, data, sender)
@@ -1014,15 +1024,6 @@ class UDPTransport:
             state["acked"].update(i for i in acked_chunks if isinstance(i, int))
             if state["acked"] >= set(state["chunks"]):
                 state["event"].set()
-
-    def _rebroadcast(self, msg_type: int, msg_id: int,
-                     data: dict, exclude: str):
-        peers = [p for p in self._pool.get_all() if p != exclude]
-        if not peers:
-            return
-        payload = _encode(data)
-        for addr in peers:
-            self._send_chunked(msg_type, msg_id, payload, self._addr_tuple(addr))
 
     # ------------------------------------------------------------------
     # Utilities

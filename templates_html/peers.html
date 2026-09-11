@@ -34,7 +34,7 @@
         <td data-label="Status" style="color:var(--green)">active</td>
       </tr>
     {% if rows %}
-      {% for addr, last_seen, active, height, wallet, inferred_wallet, version, http_reachable in rows %}
+      {% for addr, last_seen, active, height, wallet, version, http_reachable in rows %}
       <tr>
         {% if http_reachable %}
         <td data-label="Address" class="hash-short"><a class="peer-link" href="http://{{ addr }}" target="_blank" rel="noopener"
@@ -44,11 +44,6 @@
         {% endif %}
         {% if wallet %}
         <td data-label="Wallet" class="hash-short" title="{{ wallet }}"><a href="/address?addr={{ wallet | urlencode }}">{{ wallet[:14] }}&hellip;</a></td>
-        {% elif inferred_wallet %}
-        <td data-label="Wallet" class="hash-short" style="color:var(--accent);font-style:italic"
-            title="Unconfirmed: inferred from a block this peer relayed, not reported by the peer directly. Full address: {{ inferred_wallet }}">
-          <a href="/address?addr={{ inferred_wallet | urlencode }}" style="color:inherit">{{ inferred_wallet[:14] }}&hellip;</a>
-        </td>
         {% else %}
         <td data-label="Wallet" class="hash-short" style="color:var(--muted)">unknown</td>
         {% endif %}
@@ -152,11 +147,6 @@
 
     if (p.wallet) {
       tr.appendChild(walletCell(p.wallet));
-    } else if (p.inferred_wallet) {
-      tr.appendChild(walletCell(p.inferred_wallet, {
-        color: "var(--accent)", italic: true,
-        title: "Unconfirmed: inferred from a block this peer relayed, not reported by the peer directly. Full address: " + p.inferred_wallet,
-      }));
     } else {
       tr.appendChild(walletCell(null));
     }

@@ -108,7 +108,6 @@ class TestPeersPage:
         pool.update_info("1.2.3.4:9000", height=5, wallet="peer.wallet.addr", version="0.2.0")
         pool.add("5.6.7.8:9000")  # no update_info -- height/wallet/version unknown
         pool.add("9.9.9.9:9000")
-        pool.note_relayed_builder("9.9.9.9:9000", "inferred.wallet.addr")
         app = api.create_private_app(node, pool)
         return app.test_client()
 
@@ -125,7 +124,6 @@ class TestPeersPage:
         assert "unknown" in html  # peer with no cached wallet yet
         assert "?" in html        # peer with no cached height yet
         assert "9.9.9.9:9000" in html
-        assert "inferred.wallet.addr" in html
         assert "0.2.0" in html  # peer's confirmed version
 
 

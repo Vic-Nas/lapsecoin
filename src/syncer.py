@@ -34,6 +34,14 @@ FETCH_CHUNK = 50    # blocks per GETSYNC request
 # empty/missing chain field, which is a legitimate answer, not a timeout.
 SYNC_REQUEST_RETRIES = 2
 
+# How far back _find_fork_point looks before widening to the whole chain.
+# Matched to node.RECENT_STATE_CACHE_SIZE, which already defines where this
+# codebase treats a reorg as abnormal rather than routine: past that depth
+# a node replays from genesis anyway, so a wider search there costs nothing
+# it wasn't already going to pay. Not a new tuning knob, the same boundary
+# read from the other side.
+FORK_SEARCH_WINDOW = 20
+
 
 class Syncer:
 
@@ -41,20 +49,20 @@ class Syncer:
         self.pool = pool
         self.udp  = udp
 
-    def check_and_sync(self, local_chain, apply_fn, info_timeout=8.0):
-        """Pick a random peer and sync if they have a better chain.
+    def check_and_sync(self, local_chain, apply_fn, peer=None, info_timeout=8.0):
+        """Sync from `peer` (default: a random one) if they have a better chain.
 
         Compares by cumulative proven VDF work (tip hash breaks ties).
         Returns True if the chain was updated.
 
+        peer: who to ask. Callers that already know who is ahead (node.py
+        learns it from the block that proved it) pass that address, instead
+        of paying for a random draw that probably picks someone who isn't.
+
         info_timeout: how long to wait for the initial GETINFO probe.
-        Kept short by callers that poll this repeatedly on a tight interval
-        (e.g. node.py's mid-VDF-wait polling), so an unresponsive peer
-        can't eat a large chunk of that interval every time it's picked --
-        the fork-point/fetch phase below still uses its own longer,
-        unrelated timeouts since it only runs when there's real work to do.
         """
-        peer = self.pool.random()
+        if peer is None:
+            peer = self.pool.random()
         if not peer:
             log.debug("[sync] no peers available")
             return False
@@ -78,7 +86,18 @@ class Syncer:
         local_height  = len(local_chain) - 1
         local_tip     = local_chain[-1]["hash"] if local_chain else ""
 
-        # Only skip if already in sync; otherwise always compare
+        # Stop at the first round trip whenever the peer doesn't even claim
+        # to have more than we do. Without this, a peer that is level or
+        # behind still cost a full O(log chain) binary-search fork probe
+        # plus a fetch, all to end at "remote chain not better" -- work that
+        # grew with chain length, every time, for an answer this one
+        # comparison already gives. Their claim can't promote them past
+        # validation, so believing it here is free: it only ever declines to
+        # spend more.
+        if not isinstance(remote_height, int) or remote_height < local_height:
+            log.debug("[sync] peer=%s claims height=%s, not above local=%d",
+                      peer, remote_height, local_height)
+            return False
         if remote_height == local_height and info.get("tip_hash", "") == local_tip:
             log.debug("[sync] already in sync  peer=%s  height=%d", peer, local_height)
             return False
@@ -153,8 +172,30 @@ class Syncer:
         return None
 
     def _find_fork_point(self, peer, local_chain):
-        """Binary search for common ancestor. O(log n) round trips."""
-        lo, hi = 0, len(local_chain) - 1
+        """Binary search for the common ancestor, returning the first height
+        that differs (so the caller fetches from there).
+
+        Searched over a recent window first, widening to the whole chain
+        only when the window's own base already diverges. Forks here are
+        shallow by construction -- a lost race resolves within a block or
+        two -- so searching from genesis every time charged O(log chain)
+        round trips, growing with chain length forever, to rediscover a
+        fork a few blocks back. Widening keeps the deep case correct; it
+        just stops being the price of the common one.
+        """
+        window_lo = max(0, len(local_chain) - 1 - FORK_SEARCH_WINDOW)
+        if window_lo > 0:
+            match = self._highest_common(peer, local_chain, window_lo)
+            if match is not None:
+                return match + 1
+            log.debug("[sync] fork older than recent window, widening  peer=%s", peer)
+        match = self._highest_common(peer, local_chain, 0)
+        return (match + 1) if match is not None else 0
+
+    def _highest_common(self, peer, local_chain, lo):
+        """Highest height in [lo, tip] where our block and the peer's match,
+        or None if even `lo` differs (or the peer never answered)."""
+        hi = len(local_chain) - 1
         result = None
 
         while lo <= hi:
@@ -174,4 +215,4 @@ class Syncer:
             else:
                 hi = mid - 1
 
-        return (result + 1) if result is not None else 0
+        return result

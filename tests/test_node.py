@@ -300,13 +300,13 @@ class TestSubmitTx:
         node.submit_tx(t)
         assert node.mempool.size() == 1
 
-    def test_submit_tx_relays_via_gossip(self, node_env):
+    def test_submit_tx_enters_propagation(self, node_env):
         node, _, __, gossip, *_ = node_env
         node.cs.state.credit(address(0), 100 * TICKS_PER_LAPSE)
         node.cs.state.total_minted += 100 * TICKS_PER_LAPSE
         t = make_tx(0, 1, TICKS_PER_LAPSE, node.cs.state)
         node.submit_tx(t)
-        gossip.relay_tx.assert_called_once()
+        gossip.spread.assert_called_once()
 
     def test_submit_invalid_tx_returns_false(self, node_env):
         node, *_ = node_env
@@ -436,18 +436,17 @@ class TestCommit:
         assert node.view is not old_view
         assert node.view.height == 1
 
-    def test_commit_relay_true_broadcasts(self, node_env):
+    def test_commit_does_not_re_propagate(self, node_env):
+        """Propagation happens once, where the block first appears: a peer's
+        when it arrives (_handle_inbound_block), our own when we build it.
+        Re-sending at commit would just be a second copy of something the
+        network already has."""
         node, _, __, gossip, *_ = node_env
-        blk = make_block(1, node.cs.tip["hash"], [])
+        g = node.cs.tip
+        blk = make_block(1, g["hash"], [])
         node._commit(blk, relay=True)
-        gossip.broadcast_block.assert_called_once()
-
-    def test_commit_relay_false_does_not_broadcast(self, node_env):
-        node, _, __, gossip, *_ = node_env
-        blk = make_block(1, node.cs.tip["hash"], [])
-        node._commit(blk, relay=False)
-        gossip.broadcast_block.assert_not_called()
-
+        gossip.spread.assert_not_called()
+        gossip.relay.assert_not_called()
 
 # ---------------------------------------------------------------------------
 # 9. _drain_queue / _handle
@@ -495,7 +494,7 @@ class TestHandleInboundTx:
         node.cs.state.credit(address(0), 100 * TICKS_PER_LAPSE)
         node.cs.state.total_minted += 100 * TICKS_PER_LAPSE
         t = make_tx(0, 1, TICKS_PER_LAPSE, node.cs.state)
-        msg = {"tx": t, "relay_type": "tx_fluff", "remaining_hops": 0}
+        msg = {"tx": t, "sender": "1.2.3.4:1", "stemming": False}
         node._handle_inbound_tx(msg)
         assert node.mempool.size() == 1
 
@@ -503,7 +502,7 @@ class TestHandleInboundTx:
         node, *_ = node_env
         # No balance for address(5)
         t = make_tx(5, 1, TICKS_PER_LAPSE, node.cs.state)
-        msg = {"tx": t, "relay_type": "tx_fluff", "remaining_hops": 0}
+        msg = {"tx": t, "sender": "1.2.3.4:1", "stemming": False}
         node._handle_inbound_tx(msg)
         assert node.mempool.size() == 0
 
@@ -512,34 +511,40 @@ class TestHandleInboundTx:
         node.cs.state.credit(address(0), 100 * TICKS_PER_LAPSE)
         node.cs.state.total_minted += 100 * TICKS_PER_LAPSE
         t = make_tx(0, 1, TICKS_PER_LAPSE, node.cs.state)
-        msg = {"tx": t, "relay_type": "tx_fluff", "remaining_hops": 0}
+        msg = {"tx": t, "sender": "1.2.3.4:1", "stemming": False}
         node._handle_inbound_tx(msg)
         node._handle_inbound_tx(msg)  # second time -- duplicate
         assert node.mempool.size() == 1
 
-    def test_stem_tx_forwarded_without_validation(self, node_env):
+    def test_stem_tx_is_validated_before_being_forwarded(self, node_env):
+        """A tx still in the private phase is forwarded rather than admitted
+        -- we're a relay for it, not its destination -- but it is validated
+        first. Relaying something unvalidated would let anyone spend our
+        bandwidth, and every downstream peer's, for one crafted datagram."""
         node, _, __, gossip, *_ = node_env
-        # Even an invalid tx (no balance) should be forwarded on stem
-        t = make_tx(5, 1, TICKS_PER_LAPSE, node.cs.state)
-        msg = {"tx": t, "relay_type": "tx_stem", "remaining_hops": 3}
-        node._handle_inbound_tx(msg)
-        gossip.dandelion_send.assert_called_once()
+        node.cs.state.credit(address(0), 10 * TICKS_PER_LAPSE)
+        t = make_tx(0, 1, TICKS_PER_LAPSE, node.cs.state)
+        node._handle_inbound_tx({"tx": t, "sender": "1.2.3.4:1", "stemming": True})
+        gossip.relay.assert_called_once()
+        assert gossip.relay.call_args.args[3] == "1.2.3.4:1"
+        assert gossip.relay.call_args.kwargs["stemming"] is True
+        # forwarded, not admitted
         assert node.mempool.size() == 0
 
-    def test_fluff_valid_tx_relayed(self, node_env):
-        """A validated fluff continues flooding via dandelion_send(tx, 0),
-        not relay_tx() -- relay_tx() would re-decide stem-vs-flood from this
-        node's own peer count, which on a well-connected relay silently
-        pulls an already-public tx back into a fresh private stem instead
-        of flooding it onward. See node.py's _handle_inbound_tx."""
+    def test_invalid_stem_tx_is_not_forwarded(self, node_env):
         node, _, __, gossip, *_ = node_env
-        node.cs.state.credit(address(0), 100 * TICKS_PER_LAPSE)
-        node.cs.state.total_minted += 100 * TICKS_PER_LAPSE
+        t = make_tx(0, 1, TICKS_PER_LAPSE, fresh_state())  # sender has no balance
+        node._handle_inbound_tx({"tx": t, "sender": "1.2.3.4:1", "stemming": True})
+        gossip.relay.assert_not_called()
+
+    def test_public_tx_is_admitted_and_passed_on(self, node_env):
+        node, _, __, gossip, *_ = node_env
+        node.cs.state.credit(address(0), 10 * TICKS_PER_LAPSE)
         t = make_tx(0, 1, TICKS_PER_LAPSE, node.cs.state)
-        msg = {"tx": t, "relay_type": "tx_fluff", "remaining_hops": 0}
-        node._handle_inbound_tx(msg)
-        gossip.relay_tx.assert_not_called()
-        gossip.dandelion_send.assert_called_once_with(t, 0)
+        node._handle_inbound_tx({"tx": t, "sender": "1.2.3.4:1", "stemming": False})
+        assert node.mempool.size() == 1
+        gossip.relay.assert_called_once()
+        assert gossip.relay.call_args.kwargs["stemming"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -827,17 +832,15 @@ class TestReorgMempool:
 
 
 # ---------------------------------------------------------------------------
-# 15. _run_cycle: mid-VDF sync polling and the staleness guard
+# 15. _run_cycle: event-driven sync and the staleness guard
 # ---------------------------------------------------------------------------
 
-class TestRunCycleSyncPolling:
-    """_run_cycle re-checks for a better peer chain periodically during the
-    VDF wait (not just once at cycle start), so a lagging node can converge
-    in roughly SYNC_POLL_INTERVAL_SECONDS instead of a full mining cycle.
-    If that mid-wait check adopts a better chain, the in-flight VDF result
-    (computed for the now-stale tip) must be discarded rather than committed,
-    since ChainState.apply_block trusts previous_hash without re-checking it.
-    """
+class TestRunCycleSync:
+    """Sync happens on evidence, not on a schedule. The evidence is an
+    inbound block above our tip, which propagation delivers for free and
+    which names the peer holding it. If a sync adopts a better chain
+    mid-wait, the in-flight VDF was computed for a tip that no longer
+    exists and must be discarded, not committed."""
 
     def _slow_fake_evaluate(self, sleep_seconds):
         def _evaluate(challenge, iterations, handle=None):
@@ -845,46 +848,87 @@ class TestRunCycleSyncPolling:
             return "aa" * 100, "bb" * 100, sleep_seconds
         return _evaluate
 
-    def test_check_and_sync_runs_more_than_once_during_a_slow_vdf(
-        self, node_env, monkeypatch
-    ):
-        node, *_ = node_env
-        monkeypatch.setattr(node_mod, "SYNC_POLL_INTERVAL_SECONDS", 0.05)
-        monkeypatch.setattr(node_mod.vdf_mod, "evaluate", self._slow_fake_evaluate(0.3))
+    def test_quiet_network_does_not_poll_at_all(self, node_env, monkeypatch):
+        """Nothing arrived and the chain is keeping pace, so there is
+        nothing to ask anyone about. The old code paid a round trip every
+        cycle plus one every 10s regardless."""
+        node, *_, syncer, pool, net_q = node_env
+        monkeypatch.setattr(node_mod.vdf_mod, "evaluate", self._slow_fake_evaluate(0.05))
 
         node._run_cycle()
 
-        # Once at cycle start plus at least one mid-wait poll.
-        calls = node.syncer.check_and_sync.call_args_list
-        assert len(calls) >= 2
-        # Cycle-start call keeps the syncer's own default GETINFO timeout --
-        # it isn't repeated, so there's no budget it could eat into.
-        assert "info_timeout" not in calls[0].kwargs
-        # Every mid-wait call uses the short timeout so an unresponsive peer
-        # can't repeatedly consume most of the polling interval on this
-        # single-threaded loop.
-        for call in calls[1:]:
-            assert call.kwargs.get("info_timeout") == node_mod.SYNC_POLL_INFO_TIMEOUT_SECONDS
+        syncer.check_and_sync.assert_not_called()
+
+    def test_block_above_our_tip_triggers_a_sync_against_its_sender(
+        self, node_env, monkeypatch
+    ):
+        node, *_, syncer, pool, net_q = node_env
+        monkeypatch.setattr(node_mod.vdf_mod, "evaluate", self._slow_fake_evaluate(0.05))
+        ahead = make_block(7, "00" * 32, [])
+        net_q.put({"type": "block", "block": ahead, "sender": "9.9.9.9:1"})
+
+        node._run_cycle()
+
+        syncer.check_and_sync.assert_called_once()
+        assert syncer.check_and_sync.call_args.kwargs["peer"] == "9.9.9.9:1"
+
+    def test_a_block_at_or_below_our_tip_triggers_nothing(self, node_env, monkeypatch):
+        node, *_, syncer, pool, net_q = node_env
+        monkeypatch.setattr(node_mod.vdf_mod, "evaluate", self._slow_fake_evaluate(0.05))
+        g = node.cs.tip
+        net_q.put({"type": "block", "block": g, "sender": "9.9.9.9:1"})
+
+        node._run_cycle()
+
+        syncer.check_and_sync.assert_not_called()
+
+    def test_silence_past_the_chains_own_pace_polls_the_highest_peer(
+        self, node_env, monkeypatch
+    ):
+        """The one case no inbound block can ever report: nothing is
+        arriving at all. Threshold comes from the chain's measured median
+        interval, and the peer from heights the pool already caches."""
+        node, *_, syncer, pool, net_q = node_env
+        monkeypatch.setattr(node_mod.vdf_mod, "evaluate", self._slow_fake_evaluate(0.05))
+        # Threshold longer than this test's cycle, so the one poll silence
+        # earns isn't repeated on every loop tick.
+        monkeypatch.setattr(node, "_silence_threshold", lambda: 5.0)
+        node._last_block_seen = time.monotonic() - 60
+        pool.snapshot.return_value = [
+            ("low:1", 0, True, 3, "", "", "", None),
+            ("high:1", 0, True, 99, "", "", "", None),
+            ("offline:1", 0, False, 500, "", "", "", None),
+        ]
+
+        node._run_cycle()
+
+        syncer.check_and_sync.assert_called_once()
+        assert syncer.check_and_sync.call_args.kwargs["peer"] == "high:1"
 
     def test_mid_wait_reorg_discards_stale_candidate(self, node_env, monkeypatch):
-        node, *_ = node_env
-        original_cs = node.cs
-        replacement_cs = ChainState.from_genesis()  # a distinct chain-state object
-        calls = {"n": 0}
+        """Evidence that arrives *after* the VDF has started. The proof we
+        end up with was computed for a tip that no longer exists, so it has
+        to be thrown away rather than spliced onto the wrong parent.
+
+        (Evidence arriving *before* the VDF starts is a different and better
+        case: the cycle simply builds on the corrected tip, no work wasted.
+        That's what test_block_above_our_tip_triggers_a_sync covers.)"""
+        node, *_, syncer, pool, net_q = node_env
+        replacement_cs = ChainState.from_genesis()
 
         def fake_check_and_sync(chain, apply_fn, **kwargs):
-            # First call is the existing top-of-cycle check (before this
-            # cycle's tip is even locked in); only the *second* call, from
-            # inside the wait loop, should simulate a genuine mid-wait
-            # reorg landing out from under the in-flight VDF computation.
-            calls["n"] += 1
-            if calls["n"] >= 2:
-                node.cs = replacement_cs
+            node.cs = replacement_cs
             return True
 
-        monkeypatch.setattr(node_mod, "SYNC_POLL_INTERVAL_SECONDS", 0.05)
-        monkeypatch.setattr(node_mod.vdf_mod, "evaluate", self._slow_fake_evaluate(0.3))
-        node.syncer.check_and_sync.side_effect = fake_check_and_sync
+        def evaluate_then_land_a_reorg(challenge, iterations, handle=None):
+            net_q.put({"type": "block",
+                       "block": make_block(7, "00" * 32, []),
+                       "sender": "9.9.9.9:1"})
+            time.sleep(0.3)
+            return "aa" * 100, "bb" * 100, 0.3
+
+        monkeypatch.setattr(node_mod.vdf_mod, "evaluate", evaluate_then_land_a_reorg)
+        syncer.check_and_sync.side_effect = fake_check_and_sync
         commit_spy = MagicMock()
         monkeypatch.setattr(node, "_commit", commit_spy)
 
@@ -894,10 +938,7 @@ class TestRunCycleSyncPolling:
         commit_spy.assert_not_called()
 
     def test_no_stale_reorg_commits_normally(self, node_env, monkeypatch):
-        """Sanity check: when self.cs never changes mid-wait, the candidate
-        still gets built and committed as before."""
         node, *_ = node_env
-        monkeypatch.setattr(node_mod, "SYNC_POLL_INTERVAL_SECONDS", 0.05)
         monkeypatch.setattr(node_mod.vdf_mod, "evaluate", self._slow_fake_evaluate(0.15))
         commit_spy = MagicMock()
         monkeypatch.setattr(node, "_commit", commit_spy)
@@ -908,7 +949,6 @@ class TestRunCycleSyncPolling:
 
     def test_status_line_reflects_vdf_computation(self, node_env, monkeypatch):
         node, *_ = node_env
-        monkeypatch.setattr(node_mod, "SYNC_POLL_INTERVAL_SECONDS", 0.05)
         monkeypatch.setattr(node_mod.vdf_mod, "evaluate", self._slow_fake_evaluate(0.05))
 
         node._run_cycle()
@@ -916,13 +956,7 @@ class TestRunCycleSyncPolling:
         assert "block 1" in node.status_line
 
     def test_status_line_updates_on_heartbeat(self, node_env, monkeypatch):
-        """Without a heartbeat, the status line (and log) would sit on
-        whatever it said at cycle start for the entire VDF wait -- update it
-        partway through too, not just at start/end. Snapshot status_line on
-        every wait-loop tick, since the final commit overwrites it by the
-        time _run_cycle() returns."""
         node, *_ = node_env
-        monkeypatch.setattr(node_mod, "SYNC_POLL_INTERVAL_SECONDS", 0.05)
         monkeypatch.setattr(node_mod, "VDF_HEARTBEAT_INTERVAL_SECONDS", 0.05)
         monkeypatch.setattr(node_mod.vdf_mod, "evaluate", self._slow_fake_evaluate(0.3))
 
@@ -1035,3 +1069,68 @@ class TestRunCycleSettleWindow:
         commit_spy.assert_called_once()
         winner = commit_spy.call_args.args[0]
         assert winner.get("builder") == node.addr  # own candidate won, not the garbage
+
+
+# ---------------------------------------------------------------------------
+# 17. Rework: an item that never comes back gets re-sent
+# ---------------------------------------------------------------------------
+
+class TestRework:
+    """A stem hands an item to one peer and forgets it. If that peer is a
+    dead end (its only link is back to us) or the datagram is lost, the item
+    stops there and nobody else hears about it -- and the sender cannot tell
+    either case from success. Noticing it never came back is the only signal
+    available, and it's what makes stemming safe on a graph we can't see.
+    Without it, a block could cost its builder the whole evaluation."""
+
+    def test_item_that_echoes_back_is_not_re_sent(self, node_env):
+        node, _, __, gossip, *_ = node_env
+        node.cs.state.credit(address(0), 10 * TICKS_PER_LAPSE)
+        t = make_tx(0, 1, TICKS_PER_LAPSE, node.cs.state)
+        h = tx_mod.tx_hash(t)
+
+        node._spread(t, "tx", h)
+        assert h in node._unconfirmed_spreads
+        node._note_echo(h)
+
+        node._retry_unconfirmed_spreads()
+        gossip.force_fluff.assert_not_called()
+
+    def test_item_that_never_comes_back_is_flooded(self, node_env):
+        node, _, __, gossip, *_ = node_env
+        blk = make_block(1, node.cs.tip["hash"], [])
+
+        node._spread(blk, "block", blk["hash"])
+        # Pretend the deadline has passed rather than waiting it out.
+        item, kind, _ = node._unconfirmed_spreads[blk["hash"]]
+        node._unconfirmed_spreads[blk["hash"]] = (item, kind, time.monotonic() - 3600)
+
+        node._retry_unconfirmed_spreads()
+
+        gossip.force_fluff.assert_called_once()
+        assert gossip.force_fluff.call_args.args[0] is blk
+        # Cleared, so it isn't re-flooded on every subsequent tick.
+        assert blk["hash"] not in node._unconfirmed_spreads
+
+    def test_retry_floods_rather_than_stemming_again(self, node_env):
+        """The first attempt already spent what privacy a stem buys, and the
+        walk has now demonstrably failed once. Another private hand-off
+        risks the same silent death; delivery wins on the retry."""
+        node, _, __, gossip, *_ = node_env
+        blk = make_block(1, node.cs.tip["hash"], [])
+        node._spread(blk, "block", blk["hash"])
+        item, kind, _ = node._unconfirmed_spreads[blk["hash"]]
+        node._unconfirmed_spreads[blk["hash"]] = (item, kind, time.monotonic() - 3600)
+
+        node._retry_unconfirmed_spreads()
+
+        gossip.force_fluff.assert_called_once()
+        gossip.spread.assert_called_once()   # only the original, no re-stem
+
+    def test_echo_deadline_uses_measured_times_once_there_are_enough(self, node_env):
+        node, *_ = node_env
+        assert node._echo_deadline_seconds() == node_mod.ECHO_BOOTSTRAP_SECONDS
+        for _ in range(10):
+            node._echo_seconds.append(4.0)
+        # p95 of the node's own round trips, doubled for the ordinary tail.
+        assert node._echo_deadline_seconds() == 8.0

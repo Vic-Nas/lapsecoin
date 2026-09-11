@@ -57,16 +57,35 @@ class TestCheckAndSync:
         assert syncer.check_and_sync(chain_of(3), apply_fn=MagicMock()) is False
         pool.strike.assert_not_called()
 
-    def test_peer_behind_still_compares(self):
-        # Syncer always fetches and compares regardless of local vs. remote height
+    def test_peer_below_our_height_costs_one_round_trip(self):
+        """A peer that doesn't even claim to be ahead is dropped after the
+        GETINFO. It used to cost a full O(log chain) fork-point search plus
+        a fetch to reach the same conclusion, every time, growing with chain
+        length -- for an answer the height comparison already gives."""
         syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
         udp.get_info.return_value = {"height": 2, "tip_hash": ""}
+        apply_fn = MagicMock(return_value=False)
+        assert syncer.check_and_sync(chain_of(5), apply_fn=apply_fn) is False
+        apply_fn.assert_not_called()
+        udp.request_sync.assert_not_called()
+
+    def test_peer_ahead_is_fetched(self):
+        syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
+        udp.get_info.return_value = {"height": 9, "tip_hash": ""}
         udp.request_sync.return_value = wrap_chain(chain_of(3)[1:])
-        local = chain_of(5)
         apply_fn = MagicMock(return_value=False)
         with patch.object(syncer, "_find_fork_point", return_value=0):
-            syncer.check_and_sync(local, apply_fn=apply_fn)
+            syncer.check_and_sync(chain_of(5), apply_fn=apply_fn)
         apply_fn.assert_called_once()
+
+    def test_caller_can_name_the_peer_to_ask(self):
+        """node.py learns who is ahead from the block that proved it, so it
+        asks that peer instead of paying for a random draw."""
+        syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
+        udp.get_info.return_value = {"height": 1, "tip_hash": ""}
+        syncer.check_and_sync(chain_of(5), apply_fn=MagicMock(), peer="9.9.9.9:1")
+        pool.random.assert_not_called()
+        assert udp.get_info.call_args[0][0] == "9.9.9.9:1"
 
     def test_fork_point_none_returns_false(self):
         syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])

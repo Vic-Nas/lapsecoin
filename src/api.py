@@ -645,9 +645,9 @@ def _shared_read_only_routes(app, node, pool, limiter,
         return [
             {"address": addr, "last_seen": int(last_seen), "active": active,
              "height": height, "wallet": wallet,
-             "inferred_wallet": inferred_wallet, "version": version,
+             "version": version,
              "http_reachable": http_reachable}
-            for addr, last_seen, active, height, wallet, inferred_wallet, version, http_reachable in rows
+            for addr, last_seen, active, height, wallet, version, http_reachable in rows
         ]
 
     def _self_info():
