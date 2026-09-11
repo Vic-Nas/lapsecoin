@@ -102,7 +102,7 @@ class _PassphraseDialog:
     def __init__(self, keyfile):
         self.keyfile = keyfile
         self.is_new = not os.path.exists(keyfile)
-        self.result = None  # (pk, kek) on success
+        self.result = None  # (pk, kek, passphrase) on success
 
         self.root = tk.Tk()
         _install_tk_exception_logging(self.root)
@@ -173,7 +173,7 @@ class _PassphraseDialog:
             except Exception as e:
                 self.error_var.set(f"Could not create key: {e}")
                 return
-            self.result = (pk, kek)
+            self.result = (pk, kek, p1)
             self.root.destroy()
             return
 
@@ -190,7 +190,7 @@ class _PassphraseDialog:
             self.error_var.set(f"Could not load key: {e}")
             return
         log.info("[startup] key loaded  file=%s", self.keyfile)
-        self.result = (pk, kek)
+        self.result = (pk, kek, p1)
         self.root.destroy()
 
     def run(self):
@@ -199,8 +199,8 @@ class _PassphraseDialog:
 
 
 def load_or_create_key_gui(keyfile):
-    """GUI equivalent of main._load_or_create_key. Returns (pk, kek), or
-    exits the process if the user cancels."""
+    """GUI equivalent of main._load_or_create_key. Returns
+    (pk, kek, passphrase), or exits the process if the user cancels."""
     result = _PassphraseDialog(keyfile).run()
     if result is None:
         sys.exit(0)
