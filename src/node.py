@@ -39,6 +39,7 @@ import mempool as mempool_mod
 import settings as settings_mod
 import tx as tx_mod
 import vdf as vdf_mod
+from cachetools import LRUCache
 from chainstate import ChainState
 from params import DB_PATH
 from storage import Storage
@@ -126,6 +127,11 @@ VDF_HEARTBEAT_INTERVAL_SECONDS = 30
 # attacker). Not something worth building fast-path machinery for.
 RECENT_STATE_CACHE_SIZE = 20
 
+# Verdicts remembered per tip (see Node._judged). Only needs to cover the
+# distinct blocks that can plausibly show up for one height, which is a
+# handful of real candidates plus whatever noise arrives alongside them.
+JUDGED_CACHE_SIZE = 10_000
+
 
 # ---------------------------------------------------------------------------
 # Tail validation (pure, no node state touched)
@@ -207,9 +213,14 @@ class Node:
         # under a fresh transport msg_id doesn't buy a repeat of the VDF
         # verification behind block_mod.validate. Cleared whenever the tip
         # moves, since that is exactly when a previous verdict stops
-        # applying. Bounded, and only ever an optimisation: a miss costs a
-        # re-check, never a wrong answer.
-        self._judged_at_tip = {}
+        # applying. Only ever an optimisation: a miss costs a re-check,
+        # never a wrong answer.
+        #
+        # An LRU rather than a capped dict. A dict that simply stopped
+        # accepting entries once full could be switched off by anyone
+        # willing to send ten thousand junk hashes, which is precisely the
+        # traffic it exists to absorb; here that junk just ages out again.
+        self._judged_at_tip = LRUCache(maxsize=JUDGED_CACHE_SIZE)
         self._judged_tip = None
 
         # Last background probe. Spaced by the chain's own pace rather than
@@ -796,17 +807,23 @@ class Node:
                      blk["height"], blk["hash"][:12])
         return ok
 
+    def _judged_cache(self, cs):
+        """The verdict cache belonging to this tip, emptied if the tip has
+        moved since it was filled. Both the read and the write go through
+        here, so a write can never land in the previous tip's generation."""
+        if self._judged_tip != cs.tip["hash"]:
+            self._judged_at_tip = LRUCache(maxsize=JUDGED_CACHE_SIZE)
+            self._judged_tip = cs.tip["hash"]
+        return self._judged_at_tip
+
     def _judged(self, blk, cs):
         """Cached verdict for this block against this tip, or None."""
-        if self._judged_tip != cs.tip["hash"]:
-            self._judged_at_tip = {}
-            self._judged_tip = cs.tip["hash"]
-        return self._judged_at_tip.get(blk.get("hash"))
+        return self._judged_cache(cs).get(blk.get("hash"))
 
     def _remember_judgement(self, blk, cs, verdict):
         h = blk.get("hash")
-        if h and len(self._judged_at_tip) < 10_000:
-            self._judged_at_tip[h] = verdict
+        if h:
+            self._judged_cache(cs)[h] = verdict
         return verdict
 
     def _validate_candidate(self, blk, cs):

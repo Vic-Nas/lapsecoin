@@ -12,20 +12,40 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import api
 import mempool as mempool_mod
 import peerpool as peerpool_mod
+import settings as settings_mod
 from chainstate import ChainState
 from node import NodeView
 from params import TICKS_PER_LAPSE
 from tests.fixtures import address, make_tx, seed_balance
 
 
+class _MemoryMeta:
+    """Storage stand-in for Settings: the only two methods it uses."""
+
+    def __init__(self):
+        self._meta = {}
+
+    def get_meta(self, key, default=None):
+        return self._meta.get(key, default)
+
+    def set_meta(self, key, value):
+        self._meta[key] = str(value)
+
+
 class _FakeNode:
-    """Just enough of Node's public surface for fee_estimate: .mempool
-    and .view (chain/tip)."""
+    """Just enough of Node's public surface for the routes under test:
+    .mempool, .view (chain/tip), .addr, and the settings the private
+    settings page reads and writes."""
 
     def __init__(self, cs, addr=None):
         self.mempool = mempool_mod.Mempool()
         self.view = NodeView(cs)
         self.addr = addr or address(0)
+        self.settings = settings_mod.Settings(_MemoryMeta())
+
+    @property
+    def advertised_addr(self):
+        return self.addr
 
 
 def fresh():
@@ -164,3 +184,56 @@ class TestUpdateNav:
     def test_protocol_severity_label(self):
         html = self._render_page("protocol")
         assert "Protocol update required" in html
+
+
+class TestSettingsValidation:
+    """A value that can't be parsed must be refused, not stored. Stored
+    junk reads back as the default, so the page would say saved while the
+    node quietly ran something else."""
+
+    def _client(self):
+        node, cs = fresh()
+        pool = peerpool_mod.PeerPool(host="0.0.0.0", port=1234)
+        app = api.create_private_app(node, pool)
+        return app.test_client(), node
+
+    def _token(self, client):
+        html = client.get("/settings").get_data(as_text=True)
+        import re
+        return re.search(r'name="csrf_token" value="([^"]+)"', html).group(1)
+
+    def test_a_bad_number_is_reported_and_not_stored(self):
+        client, node = self._client()
+        before = node.settings.get(settings_mod.DRAW_WINDOW_SECONDS)
+        resp = client.post("/settings", data={
+            "csrf_token": self._token(client),
+            "draw_window_seconds": "not a number",
+        })
+        assert b"not valid" in resp.data or b"could not convert" in resp.data
+        assert node.settings.get(settings_mod.DRAW_WINDOW_SECONDS) == before
+
+    def test_a_negative_window_is_refused(self):
+        client, node = self._client()
+        before = node.settings.get(settings_mod.DRAW_WINDOW_SECONDS)
+        client.post("/settings", data={
+            "csrf_token": self._token(client),
+            "draw_window_seconds": "-5",
+        })
+        assert node.settings.get(settings_mod.DRAW_WINDOW_SECONDS) == before
+
+    def test_a_valid_number_is_stored(self):
+        client, node = self._client()
+        client.post("/settings", data={
+            "csrf_token": self._token(client),
+            "draw_window_seconds": "3.5",
+        })
+        assert node.settings.get(settings_mod.DRAW_WINDOW_SECONDS) == 3.5
+
+    def test_an_env_forced_setting_is_not_writable_from_the_page(self, monkeypatch):
+        monkeypatch.setenv("LAPSECOIN_DRAW_WINDOW_SECONDS", "7")
+        client, node = self._client()
+        client.post("/settings", data={
+            "csrf_token": self._token(client),
+            "draw_window_seconds": "999",
+        })
+        assert node.settings.get(settings_mod.DRAW_WINDOW_SECONDS) == 7.0

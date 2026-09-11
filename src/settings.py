@@ -23,23 +23,31 @@ ENV_PREFIX = "LAPSECOIN_"
 
 
 class Setting:
-    __slots__ = ("key", "default", "kind", "label", "help")
+    __slots__ = ("key", "default", "kind", "label", "help", "minimum")
 
-    def __init__(self, key, default, kind=str, label="", help=""):
+    def __init__(self, key, default, kind=str, label="", help="", minimum=None):
         self.key     = key
         self.default = default
         self.kind    = kind
         self.label   = label
         self.help    = help
+        self.minimum = minimum
 
     @property
     def env_name(self):
         return ENV_PREFIX + self.key.upper()
 
     def parse(self, raw):
+        """Parse and range-check, raising ValueError on anything this
+        setting can't hold. One implementation for both sources, so a value
+        the settings page would reject can't get in through the environment
+        instead."""
         if self.kind is bool:
             return str(raw).strip().lower() in ("1", "true", "yes", "on")
-        return self.kind(raw)
+        value = self.kind(raw)
+        if self.minimum is not None and value < self.minimum:
+            raise ValueError(f"{self.key} must be at least {self.minimum}")
+        return value
 
 
 # Privacy is off by default deliberately. A node that advertises nothing is
@@ -72,7 +80,7 @@ ADVERTISED_ADDRESS = Setting(
 # collecting against how much of our own next-height work we might redo.
 # That is a local call, which is why it is a setting and not a constant.
 DRAW_WINDOW_SECONDS = Setting(
-    "draw_window_seconds", 15.0, float,
+    "draw_window_seconds", 15.0, float, minimum=0.0,
     label="Draw window (seconds)",
     help="After adopting a block, keep accepting a better same-height "
          "candidate for this long before treating the height as settled. "

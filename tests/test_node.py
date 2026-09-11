@@ -1473,3 +1473,28 @@ class TestEchoCannotBeFaked:
         node._note_echo(blk["hash"], sender="someone.else:1")
 
         assert blk["hash"] not in node._unconfirmed_spreads
+
+
+class TestJudgementCache:
+    def test_a_flood_of_junk_cannot_switch_the_cache_off(self, node_env):
+        """A cache that stopped accepting entries once full could be
+        disabled by anyone willing to send enough junk, which is exactly
+        the traffic it exists to absorb. An LRU ages the junk out instead."""
+        node, *_ = node_env
+        g = node.cs.tip
+        for i in range(node_mod.JUDGED_CACHE_SIZE + 50):
+            node._remember_judgement({"hash": f"junk{i}"}, node.cs, False)
+
+        real = make_block(1, g["hash"], [])
+        node._remember_judgement(real, node.cs, True)
+        assert node._judged(real, node.cs) is True
+
+    def test_a_verdict_does_not_survive_the_tip_moving(self, node_env):
+        """Validity is relative to the tip, so a verdict from before a
+        reorg says nothing about after it."""
+        node, *_ = node_env
+        g = node.cs.tip
+        blk = make_block(1, g["hash"], [])
+        node._remember_judgement(blk, node.cs, True)
+        node._commit(blk)
+        assert node._judged(blk, node.cs) is None

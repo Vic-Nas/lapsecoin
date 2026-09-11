@@ -907,8 +907,20 @@ def create_private_app(node, pool, private_port=8335, public_port=8333,
                         continue
                     if setting.kind is bool:
                         node.settings.set(setting, setting.key in request.form)
-                    else:
-                        node.settings.set(setting, request.form.get(setting.key, "").strip())
+                        continue
+                    raw = request.form.get(setting.key, "").strip()
+                    if raw == "" and setting.default == "":
+                        node.settings.set(setting, "")   # clearing is meaningful here
+                        continue
+                    try:
+                        # Check before storing. Writing an unparseable value
+                        # would leave the operator looking at a page that
+                        # says saved while the node quietly runs the
+                        # default, since that is what get() falls back to.
+                        node.settings.set(setting, setting.parse(raw))
+                    except (TypeError, ValueError) as e:
+                        errors.append(f"{setting.label}: {e}"
+                                      if str(e) else f"{setting.label} is not valid.")
 
                 if errors:
                     ctx["alert_err"] = " ".join(errors)
