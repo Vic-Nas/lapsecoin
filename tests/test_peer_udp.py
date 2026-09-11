@@ -402,3 +402,45 @@ def test_start_falls_back_to_next_free_port_on_collision():
             second.stop()
     finally:
         holder.close()
+
+
+# ---------------------------------------------------------------------------
+# Compressed blocks (MT_BLOCK_Z)
+# ---------------------------------------------------------------------------
+
+def test_a_compressed_block_arrives_the_same_as_a_plain_one():
+    """MT_BLOCK_Z carries exactly what MT_BLOCK does, just deflated, so it
+    has to reach on_block indistinguishable from the plain form."""
+    import zlib
+    udp = _make_transport(MagicMock())
+    blk = {"height": 7, "hash": "ab" * 32}
+    payload = peer_udp._encode({"genesis": udp.genesis_hash, "block": blk,
+                                "stemming": False})
+
+    udp._handle_datagram(
+        peer_udp._pack(peer_udp.MT_BLOCK_Z, 4242, 0, 1, zlib.compress(payload)),
+        ("5.6.7.8", 9999))
+
+    udp._on_block.assert_called_once_with(blk, "5.6.7.8:9999", False)
+
+
+def test_a_decompression_bomb_is_refused():
+    """Compression breaks the link between what a sender spends and what we
+    allocate, so the inflated form is held to the same ceiling an
+    uncompressed message has."""
+    import zlib
+    limit = peer_udp.MAX_CHUNK_TOTAL * peer_udp.MAX_CHUNK_SIZE
+    bomb = zlib.compress(b"\0" * (limit * 4))
+    assert len(bomb) < 100_000          # tiny on the wire, huge inflated
+
+    assert peer_udp._inflate(bomb) is None
+
+
+def test_a_payload_that_is_not_compressed_at_all_is_refused():
+    assert peer_udp._inflate(b"not zlib, just bytes") is None
+
+
+def test_something_within_the_ceiling_inflates_fine():
+    import zlib
+    raw = b"x" * 10_000
+    assert peer_udp._inflate(zlib.compress(raw)) == raw

@@ -74,6 +74,7 @@ import socket
 import struct
 import threading
 import time
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 
 log = logging.getLogger("ec.udp")
@@ -91,6 +92,11 @@ MT_PUNCH_REQ = 0x09
 MT_PUNCH_GO  = 0x0A
 MT_GETINFO   = 0x0B   # request peer tip info (height + hash)
 MT_INFO      = 0x0C   # response: {"height": N, "tip_hash": "...", "wallet": "..."}
+# A block whose payload is zlib'd, and nothing else: it decompresses to
+# exactly what MT_BLOCK carries and is handled as one from that point.
+# A separate type rather than a flag so a node that predates it ignores
+# an unreadable datagram cleanly instead of failing to decode every block.
+MT_BLOCK_Z   = 0x0D
 
 MAX_CHUNK_SIZE   = 1400   # bytes, safe below MTU
 RECV_TIMEOUT     = 2.0    # seconds select/recvfrom timeout
@@ -321,6 +327,30 @@ def probe_lan_ports(genesis_hash: str, wait: float = 1.5,
         for s in socks:
             s.close()
     return found
+
+
+def _inflate(payload: bytes):
+    """Decompress an MT_BLOCK_Z payload, or None if it isn't usable.
+
+    Bounded on purpose. A message is already capped at MAX_CHUNK_TOTAL
+    chunks on the wire, but compression breaks the link between what an
+    attacker sends and what we allocate: a couple of megabytes of
+    well-chosen input expands to gigabytes. Holding the decompressed form
+    to the same ceiling an uncompressed message has means a compressed
+    block can never cost us more memory than the plain one it stands in
+    for, so this adds no new way to exhaust a node.
+    """
+    limit = MAX_CHUNK_TOTAL * MAX_CHUNK_SIZE
+    try:
+        obj = zlib.decompressobj()
+        out = obj.decompress(payload, limit)
+        if obj.unconsumed_tail:
+            log.debug("[udp] compressed block over the size ceiling, dropped")
+            return None
+        return out
+    except zlib.error:
+        log.debug("[udp] undecompressable block payload, dropped")
+        return None
 
 
 def _pack(msg_type: int, msg_id: int, chunk_idx: int,
@@ -821,6 +851,12 @@ class UDPTransport:
                            sender)
         if complete is None:
             return
+
+        if msg_type == MT_BLOCK_Z:
+            complete = _inflate(complete)
+            if complete is None:
+                return
+            msg_type = MT_BLOCK      # identical in every other respect
 
         try:
             parsed = _decode(complete)
