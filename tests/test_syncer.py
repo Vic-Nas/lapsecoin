@@ -57,25 +57,51 @@ class TestCheckAndSync:
         assert syncer.check_and_sync(chain_of(3), apply_fn=MagicMock()) is False
         pool.strike.assert_not_called()
 
-    def test_peer_below_our_height_costs_one_round_trip(self):
-        """A peer that doesn't even claim to be ahead is dropped after the
-        GETINFO. It used to cost a full O(log chain) fork-point search plus
-        a fetch to reach the same conclusion, every time, growing with chain
-        length -- for an answer the height comparison already gives."""
+    def test_peer_with_no_more_work_costs_one_round_trip(self):
+        """A peer that doesn't even claim more proven work is dropped after
+        the GETINFO. It used to cost a full O(log chain) fork-point search
+        plus a fetch to reach the same conclusion, every time, growing with
+        chain length."""
         syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
-        udp.get_info.return_value = {"height": 2, "tip_hash": ""}
+        udp.get_info.return_value = {"height": 2, "tip_hash": "", "work": 100}
         apply_fn = MagicMock(return_value=False)
-        assert syncer.check_and_sync(chain_of(5), apply_fn=apply_fn) is False
+        assert syncer.check_and_sync(chain_of(5), apply_fn=apply_fn,
+                                     local_work=100) is False
         apply_fn.assert_not_called()
         udp.request_sync.assert_not_called()
 
-    def test_peer_ahead_is_fetched(self):
+    def test_shorter_chain_with_more_work_is_still_fetched(self):
+        """Height is not what fork choice compares: forks retarget from
+        their own timestamps, so a shorter chain can carry strictly more
+        proven work -- and a padded-timestamp fork with a low iteration
+        requirement is the attack is_better_than exists to defeat. Bailing
+        on height would decline to look at the chain that beats us."""
+        syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
+        udp.get_info.return_value = {"height": 2, "tip_hash": "", "work": 999}
+        udp.request_sync.return_value = wrap_chain(chain_of(3)[1:])
+        apply_fn = MagicMock(return_value=False)
+        with patch.object(syncer, "_find_fork_point", return_value=0):
+            syncer.check_and_sync(chain_of(5), apply_fn=apply_fn, local_work=100)
+        apply_fn.assert_called_once()
+
+    def test_peer_too_old_to_report_work_is_not_bailed_on(self):
+        """Unknown is not zero: a peer that doesn't send the field at all
+        falls through to a real comparison rather than being skipped."""
         syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
         udp.get_info.return_value = {"height": 9, "tip_hash": ""}
         udp.request_sync.return_value = wrap_chain(chain_of(3)[1:])
         apply_fn = MagicMock(return_value=False)
         with patch.object(syncer, "_find_fork_point", return_value=0):
-            syncer.check_and_sync(chain_of(5), apply_fn=apply_fn)
+            syncer.check_and_sync(chain_of(5), apply_fn=apply_fn, local_work=100)
+        apply_fn.assert_called_once()
+
+    def test_peer_ahead_is_fetched(self):
+        syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
+        udp.get_info.return_value = {"height": 9, "tip_hash": "", "work": 999}
+        udp.request_sync.return_value = wrap_chain(chain_of(3)[1:])
+        apply_fn = MagicMock(return_value=False)
+        with patch.object(syncer, "_find_fork_point", return_value=0):
+            syncer.check_and_sync(chain_of(5), apply_fn=apply_fn, local_work=1)
         apply_fn.assert_called_once()
 
     def test_caller_can_name_the_peer_to_ask(self):

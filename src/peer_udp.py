@@ -889,13 +889,19 @@ class UDPTransport:
             # informational -- see set_tip_provider).
             self._pool.touch(sender_addr)
             if self._get_tip_fn:
-                height, tip_hash, wallet, version = self._get_tip_fn()
+                height, tip_hash, wallet, version, work = self._get_tip_fn()
                 self._send_one(MT_INFO, msg_id,
                                {"genesis": self.genesis_hash,
                                 "height":   height,
                                 "tip_hash": tip_hash,
                                 "wallet":   wallet,
-                                "version":  version},
+                                "version":  version,
+                                # Cumulative proven VDF iterations. Height is
+                                # not what fork choice compares (see
+                                # ChainState.is_better_than): forks retarget
+                                # from their own timestamps, so a shorter
+                                # chain can carry strictly more work.
+                                "work":     work},
                                sender)
 
         elif msg_type == MT_INFO:
@@ -910,6 +916,9 @@ class UDPTransport:
                         # unchanged against them.
                         "wallet":   data.get("wallet", ""),
                         "version":  data.get("version", ""),
+                        # Absent from peers too old to send it; None means
+                        # "unknown", never "zero" -- see Syncer.
+                        "work":     data.get("work"),
                     }
                     self._info_events[msg_id].set()
 
@@ -1034,7 +1043,8 @@ class UDPTransport:
         self._get_chain_fn = fn
 
     def set_tip_provider(self, fn):
-        """fn() -> (height, tip_hash, wallet, version). Used for lightweight
+        """fn() -> (height, tip_hash, wallet, version, cumulative_iterations).
+        Used for lightweight
         MT_GETINFO responses. wallet is our own address, shared here purely
         so peers can display/use it (e.g. for gifting) -- it's already
         public the moment we build a block, this just makes it available

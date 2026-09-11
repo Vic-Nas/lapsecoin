@@ -49,7 +49,8 @@ class Syncer:
         self.pool = pool
         self.udp  = udp
 
-    def check_and_sync(self, local_chain, apply_fn, peer=None, info_timeout=8.0):
+    def check_and_sync(self, local_chain, apply_fn, peer=None, info_timeout=8.0,
+                       local_work=None):
         """Sync from `peer` (default: a random one) if they have a better chain.
 
         Compares by cumulative proven VDF work (tip hash breaks ties).
@@ -60,6 +61,10 @@ class Syncer:
         of paying for a random draw that probably picks someone who isn't.
 
         info_timeout: how long to wait for the initial GETINFO probe.
+
+        local_work: our own cumulative proven iterations, used for the
+        cheap first-round-trip bail below. Omit it and no bail happens --
+        correct, just not free.
         """
         if peer is None:
             peer = self.pool.random()
@@ -85,18 +90,29 @@ class Syncer:
         remote_height = info["height"]
         local_height  = len(local_chain) - 1
         local_tip     = local_chain[-1]["hash"] if local_chain else ""
+        if local_work is None:
+            local_work = -1   # unknown: never bail, always compare properly
 
         # Stop at the first round trip whenever the peer doesn't even claim
-        # to have more than we do. Without this, a peer that is level or
-        # behind still cost a full O(log chain) binary-search fork probe
-        # plus a fetch, all to end at "remote chain not better" -- work that
-        # grew with chain length, every time, for an answer this one
-        # comparison already gives. Their claim can't promote them past
-        # validation, so believing it here is free: it only ever declines to
-        # spend more.
-        if not isinstance(remote_height, int) or remote_height < local_height:
-            log.debug("[sync] peer=%s claims height=%s, not above local=%d",
-                      peer, remote_height, local_height)
+        # more proven work than we already have. Without this, a peer that
+        # is level or behind still cost a full O(log chain) binary-search
+        # fork probe plus a fetch, all to end at "remote chain not better".
+        #
+        # Compared on cumulative iterations, never on height. Fork choice
+        # does not use height (ChainState.is_better_than) precisely because
+        # forks retarget from their own timestamps, so a chain can be
+        # *shorter* and still carry strictly more work -- and a padded-
+        # timestamp fork with a low iteration requirement is exactly the
+        # attack that rule exists to defeat. Bailing on height would have
+        # declined to even look at the chain that beats it.
+        #
+        # A peer too old to report work leaves this unknown, and unknown is
+        # not "nothing": fall through and let validation decide, the way it
+        # did before this shortcut existed.
+        remote_work = info.get("work")
+        if isinstance(remote_work, int) and remote_work <= local_work:
+            log.debug("[sync] peer=%s claims work=%d, not above local=%d",
+                      peer, remote_work, local_work)
             return False
         if remote_height == local_height and info.get("tip_hash", "") == local_tip:
             log.debug("[sync] already in sync  peer=%s  height=%d", peer, local_height)

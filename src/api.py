@@ -871,16 +871,12 @@ def create_private_app(node, pool, private_port=8335, public_port=8333,
 
     @app.route("/settings", methods=["GET", "POST"])
     def settings():
-        info = node.get_info()
+        import settings as settings_mod
         balance_lapse = node.view.state.get_balance(node.addr) / TICKS_PER_LAPSE
         ctx = dict(title="Settings", csrf_token=csrf_token,
                    alert_ok="", alert_err="", rewarder_available=rewarder is not None,
                    balance_lapse=balance_lapse,
-                   # A light, non-binding starting point, not a push toward any
-                   # particular amount: 5% of the current balance.
-                   suggested_lapse=balance_lapse * 0.05,
-                   settle_window_seconds=info["settle_window_seconds"],
-                   candidate_gap_stats=info["candidate_gap_stats"])
+                   suggested_lapse=balance_lapse * 0.05)
         if rewarder is not None:
             status = rewarder.status()
             ctx["remaining_lapse"] = status["remaining_ticks"] / TICKS_PER_LAPSE
@@ -891,7 +887,6 @@ def create_private_app(node, pool, private_port=8335, public_port=8333,
                 ctx["alert_err"] = "Session expired; reload the page and try again."
             else:
                 errors = []
-
                 if rewarder is not None:
                     budget_raw = request.form.get("budget_lapse", "").strip()
                     try:
@@ -904,24 +899,32 @@ def create_private_app(node, pool, private_port=8335, public_port=8333,
                     except ValueError:
                         errors.append("Budget must be a non-negative number.")
 
-                settle_raw = request.form.get("settle_window_seconds", "").strip()
-                try:
-                    seconds = float(settle_raw)
-                    if seconds < 0:
-                        raise ValueError
-                    ok, err = node.set_settle_window_seconds_from_api(seconds)
-                    if ok:
-                        ctx["settle_window_seconds"] = seconds
+                # Anything forced by an environment variable is shown but
+                # not editable here: a launch-time override shouldn't be
+                # silently rewritten by a page that can't see it.
+                for setting in settings_mod.ALL:
+                    if node.settings.forced_by_env(setting):
+                        continue
+                    if setting.kind is bool:
+                        node.settings.set(setting, setting.key in request.form)
                     else:
-                        errors.append(err or "Failed to save settle window.")
-                except ValueError:
-                    errors.append("Settle window must be a non-negative number of seconds.")
+                        node.settings.set(setting, request.form.get(setting.key, "").strip())
 
                 if errors:
                     ctx["alert_err"] = " ".join(errors)
                 else:
                     ctx["alert_ok"] = "Settings saved."
 
+        ctx["settings"] = [
+            {"key": s_.key, "label": s_.label, "help": s_.help,
+             "is_bool": s_.kind is bool,
+             "value": node.settings.get(s_),
+             "forced": node.settings.forced_by_env(s_),
+             "env_name": s_.env_name}
+            for s_ in settings_mod.ALL
+        ]
+        ctx["advertised_addr"] = node.advertised_addr
+        ctx["own_addr"] = node.addr
         return render_template("settings.html", **ctx)
 
     @app.route("/send", methods=["GET", "POST"])

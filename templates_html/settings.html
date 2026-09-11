@@ -48,36 +48,36 @@
   </div>
 
   <div class="card">
-    <div class="card-title">Settle window</div>
+    <div class="card-title">Privacy</div>
     <div class="stat-label" style="margin-bottom:.5rem">
-      While still computing its own block, this node waits this long after
-      first seeing a valid competitor (or after its own VDF finishes,
-      whichever comes first) before finalizing and giving up on a losing
-      attempt. Local to this node only.
+      Peers learn this node's wallet whenever they ask for its tip. Turning
+      this on advertises a separate address instead. The builder address
+      inside a block stays public either way, it has to be to be paid, so
+      this hides the link between this node and its wallet, not the wallet.
     </div>
-    {% if candidate_gap_stats %}
-    <div class="stats">
-      <div class="stat">
-        <div class="stat-label">Samples</div>
-        <div class="stat-value" style="font-size:1rem">{{ candidate_gap_stats.count }}</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Median gap</div>
-        <div class="stat-value" style="font-size:1rem">{{ "%.1f"|format(candidate_gap_stats.median) }}s</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">p95 gap</div>
-        <div class="stat-value" style="font-size:1rem">{{ "%.1f"|format(candidate_gap_stats.p95) }}s</div>
+    <div class="stat-sub" style="margin-bottom:.6rem">
+      Currently advertising <code>{{ advertised_addr[:24] }}&hellip;</code>{% if advertised_addr != own_addr %} (not this node's own address){% endif %}
+    </div>
+    {% for s in settings %}
+    <div class="form-group">
+      {% if s.is_bool %}
+      <label for="{{ s.key }}">
+        <input type="checkbox" id="{{ s.key }}" name="{{ s.key }}"
+               {% if s.value %}checked{% endif %} {% if s.forced %}disabled{% endif %}>
+        {{ s.label }}
+      </label>
+      {% else %}
+      <label for="{{ s.key }}">{{ s.label }}</label>
+      <input type="text" id="{{ s.key }}" name="{{ s.key }}"
+             value="{{ s.value }}" {% if s.forced %}disabled{% endif %}>
+      {% endif %}
+      <div class="stat-sub">
+        {{ s.help }}
+        {% if s.forced %}<br><strong>Set by {{ s.env_name }}; edit the environment, not this page.</strong>
+        {% else %}<br>Also settable as <code>{{ s.env_name }}</code>.{% endif %}
       </div>
     </div>
-    {% else %}
-    <div class="stat-label">Not enough real multi-candidate races observed yet to show a distribution.</div>
-    {% endif %}
-    <div class="form-group" style="margin-top:.6rem">
-      <label for="settle_window_seconds">Settle window (seconds)</label>
-      <input type="number" id="settle_window_seconds" name="settle_window_seconds"
-             min="0" step="any" value="{{ settle_window_seconds }}">
-    </div>
+    {% endfor %}
   </div>
 
 </div>

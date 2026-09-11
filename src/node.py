@@ -3,13 +3,15 @@
 One cycle:
   1. drain queue          inbound txs and blocks from net_in_q
   2. sync, if triggered   only on evidence we're behind, or on silence
-  3. vdf.evaluate()       ~120s, draining and re-checking triggers throughout,
-                          abandoned early if the settle window says it can no
-                          longer matter
+  3. vdf.evaluate()       ~120s, draining throughout, abandoned early once it
+                          provably can't land in time (_should_abandon)
   4. assemble + spread    own candidate enters propagation (gossip.py)
-  5. settle window        wait out stragglers, bounded
-  6. pick winner          lowest vdf_output among valid same-height candidates
-  7. commit               swap ChainState, persist, publish view
+  5. pick winner          lowest vdf_output among the candidates in hand
+  6. commit               swap ChainState, persist, publish view
+
+Nothing in the cycle waits. A candidate that shows up after a height is
+committed is handled by _reorg_to_sibling instead, which costs no round
+trip, so settling a height never has to block starting the next one.
 
 Flask threads read node.view (a NodeView snapshot). The node loop is the
 sole writer; every mutation publishes a new snapshot atomically.
@@ -29,10 +31,11 @@ import block as block_mod
 import crypto
 import gossip as gossip_mod
 import mempool as mempool_mod
+import settings as settings_mod
 import tx as tx_mod
 import vdf as vdf_mod
 from chainstate import ChainState
-from params import DB_PATH, SETTLE_WINDOW_SECONDS_DEFAULT
+from params import DB_PATH
 from storage import Storage
 
 log = logging.getLogger("ec.node")
@@ -64,6 +67,20 @@ SILENCE_MULTIPLE = 3.0
 # Fallback for the silence threshold before the chain is long enough to
 # have a median interval of its own (fresh node, first blocks).
 SILENCE_FALLBACK_SECONDS = 600.0
+
+# Background sampling poll, kept even though blocks normally tell us
+# everything. They only tell us what our own peers choose to forward: a node
+# that is eclipsed, or partitioned onto a consistent but inferior fork, sees
+# a perfectly healthy stream of blocks and never goes silent, so neither
+# trigger above ever fires. This samples a *random* peer rather than the
+# best-known one, since best-known is exactly who an eclipsing attacker
+# would arrange for us to keep asking.
+#
+# Expressed in block intervals rather than seconds so it tracks the chain's
+# own pace. Rare enough to be nearly free (one GETINFO, and the work
+# comparison ends it right there unless something is genuinely wrong),
+# frequent enough that a partition is measured in minutes, not never.
+BACKGROUND_POLL_BLOCK_INTERVALS = 20
 
 # GETINFO probe timeout for a sync attempt. The probe is one round trip
 # and the real one takes milliseconds; this only bounds the case where a
@@ -152,6 +169,7 @@ class Node:
         self.net_in_q     = net_in_q
         self.mempool      = mempool_mod.Mempool()
         self.storage      = Storage(db_path or DB_PATH)
+        self.settings     = settings_mod.Settings(self.storage)
         self.running      = False
         self._kek         = None
         self._loop_thread = None
@@ -189,6 +207,9 @@ class Node:
         # rather than one per loop tick.
         self._last_silence_poll = 0.0
 
+        # Last background sampling poll (see BACKGROUND_POLL_BLOCK_INTERVALS).
+        self._last_background_poll = time.monotonic()
+
         # height -> (State snapshot, cumulative_iterations) for the last
         # RECENT_STATE_CACHE_SIZE heights this node has actually committed.
         # Refreshed on every commit (_commit and apply_better_chain), stale
@@ -210,18 +231,6 @@ class Node:
         # nothing else has it, so it can't be reconstructed from chain data.
         self._own_build_seconds = collections.deque(maxlen=30)
         self._load_own_build_seconds()
-
-        # Local settle-window policy (see params.SETTLE_WINDOW_SECONDS_DEFAULT
-        # and _run_cycle's wait loop). Per-node, adjustable from the private
-        # settings page; persisted so it survives restarts.
-        self.settle_window_seconds = self._load_settle_window_seconds()
-
-        # Recent (gap_seconds) samples between the first and each later
-        # valid candidate this node has seen for the same height -- real
-        # data for calibrating a better settle-window default over time,
-        # instead of guessing one. Not consensus, not persisted mid-session
-        # critical; best-effort like _own_build_seconds.
-        self._candidate_gap_seconds = collections.deque(maxlen=200)
 
         self.cs   = self._load_cs()
         self.view = NodeView(self.cs)
@@ -254,38 +263,6 @@ class Node:
         self.storage.set_meta(self._OWN_BUILD_SECONDS_META_KEY,
                               json.dumps(list(self._own_build_seconds)))
 
-    _SETTLE_WINDOW_META_KEY = "settle_window_seconds"
-
-    def _load_settle_window_seconds(self):
-        raw = self.storage.get_meta(self._SETTLE_WINDOW_META_KEY)
-        if raw is None:
-            return SETTLE_WINDOW_SECONDS_DEFAULT
-        try:
-            v = float(raw)
-        except (TypeError, ValueError):
-            log.warning("[startup] discarding unreadable settle_window_seconds meta")
-            return SETTLE_WINDOW_SECONDS_DEFAULT
-        if v < 0:
-            return SETTLE_WINDOW_SECONDS_DEFAULT
-        return v
-
-    def _set_settle_window_seconds(self, seconds):
-        """Node loop thread only -- see submit_tx for the same enqueue
-        pattern Flask threads use to reach this safely."""
-        assert threading.current_thread() is self._loop_thread
-        seconds = max(0.0, float(seconds))
-        self.settle_window_seconds = seconds
-        self.storage.set_meta(self._SETTLE_WINDOW_META_KEY, str(seconds))
-
-    def set_settle_window_seconds_from_api(self, seconds, timeout=5):
-        """Thread-safe bridge for the private settings page (api.py)."""
-        reply = queue.Queue(maxsize=1)
-        self.net_in_q.put({"type": "set_settle_window", "seconds": seconds, "reply": reply})
-        try:
-            return reply.get(timeout=timeout)
-        except queue.Empty:
-            return False, "node busy (timeout)"
-
     def _load_cs(self):
         """Load or create ChainState from storage."""
         stored = self.storage.load_all_blocks()
@@ -314,6 +291,46 @@ class Node:
     # ------------------------------------------------------------------
     # Public interface
     # ------------------------------------------------------------------
+
+    @property
+    def advertised_addr(self):
+        """The address this node tells peers about, which is not
+        necessarily the one it builds with.
+
+        The builder address inside a block is public by construction -- it
+        has to be, or the block can't be paid -- so nothing here hides a
+        wallet. What it hides is the link between a network identity (an
+        ip:port that answers GETINFO) and the wallet that identity owns,
+        which is otherwise handed to every peer that ever asks.
+
+        Off by default: a node nobody can pay or identify is a worse
+        neighbour, and operators who want that should have to ask for it.
+        When it is on, a separate address is generated and kept encrypted
+        beside the real key, so a private node still advertises something
+        real rather than going dark.
+        """
+        if not self.settings.get(settings_mod.PRIVATE_ADDRESS):
+            return self.addr
+        configured = self.settings.get(settings_mod.ADVERTISED_ADDRESS)
+        if configured:
+            return configured
+        return self._generated_advertised_addr()
+
+    _ADVERTISED_KEY_META = "advertised_key"
+
+    def _generated_advertised_addr(self):
+        """Address of a throwaway keypair generated on first use and stored
+        encrypted under the same key material as the real one, so turning
+        privacy on doesn't mean advertising nothing, and doesn't leave a
+        second secret lying around in the clear."""
+        existing = self.storage.get_meta(self._ADVERTISED_KEY_META)
+        if existing:
+            return existing
+        _sk, pk = crypto.generate_keypair()
+        addr = crypto.public_key_to_address(pk)
+        self.storage.set_meta(self._ADVERTISED_KEY_META, addr)
+        log.info("[privacy] generated advertised address %s", addr[:24])
+        return addr
 
     def is_signing_active(self):
         return self._kek is not None
@@ -345,22 +362,6 @@ class Node:
             return None
         return own_median / stats["median"]
 
-    def observed_candidate_gap_stats(self):
-        """Real (not guessed) measurements of how far apart, in seconds,
-        this node has actually seen the first and later valid candidates
-        land for the same height -- the quantity a settle window should
-        actually be sized from (see _candidate_gap_seconds's docstring).
-        None until at least a few samples exist."""
-        if len(self._candidate_gap_seconds) < 3:
-            return None
-        samples = sorted(self._candidate_gap_seconds)
-        return {
-            "count":  len(samples),
-            "median": statistics.median(samples),
-            "p95":    samples[max(0, int(len(samples) * 0.95) - 1)],
-            "max":    samples[-1],
-        }
-
     def get_info(self):
         v = self.view
         return {
@@ -375,8 +376,6 @@ class Node:
             "block_reward": v.state.compute_block_reward(),
             "block_time_ratio": self.own_block_time_ratio(),
             "status":       self.status_line,
-            "settle_window_seconds": self.settle_window_seconds,
-            "candidate_gap_stats":   self.observed_candidate_gap_stats(),
         }
 
     def start(self, kek):
@@ -475,9 +474,8 @@ class Node:
         # Captured, not discarded: a peer's candidate for the height we're
         # about to build can legitimately arrive in this brief window too
         # (right at cycle start, before the wait loop below even begins),
-        # and dropping it here would silently skip both relaying it and
-        # arming the settle window for it -- see _consider_inbound_block,
-        # called on these again once `cs` is known below.
+        # and dropping it here would silently skip it -- see
+        # _consider_inbound_block, called on these once `cs` is known.
         pre_cycle_blocks = self._drain_queue()
         self._retry_unconfirmed_spreads()
 
@@ -491,31 +489,34 @@ class Node:
 
         # Run VDF in a background thread so the node loop stays responsive
         # to tx submissions and peer messages during the ~120s evaluation.
-        # `handle` lets us abort it early -- see the settle-window logic
-        # below and vdf.EvaluationHandle's docstring.
+        # `handle` lets us abort it early -- see _should_abandon and
+        # vdf.EvaluationHandle's docstring.
         import concurrent.futures as _cf
         accumulated_blocks = []
         iterations = block_mod.get_vdf_iterations(cs.chain)
         vdf_start = time.monotonic()
         handle = vdf_mod.EvaluationHandle()
 
-        # Settle-window state. Armed the moment EITHER our own VDF finishes
-        # OR we've validated a peer's candidate for this same height,
-        # whichever comes first -- see node.settle_window_seconds. Only a
-        # block that has already passed full block_mod.validate() is
-        # allowed anywhere near this: an unvalidated message triggering an
-        # irreversible abort of real, costly work would be a free griefing
-        # vector (craft a fake "block" message, no VDF required, and every
-        # node that trusted it discards real work for nothing).
-        settle_deadline = None
-        own_finished_early = False  # True once _fut completes, before we've broken out of the loop
+        # No waiting anywhere in here. Two things can end this cycle:
+        # our own VDF finishing, or the tip moving on without us.
+        #
+        # The version before this idled: once a competing candidate for our
+        # height showed up, it sat out a settle window collecting stragglers
+        # before picking. That handed the block's builder a free head start
+        # on the next height -- they were computing it while we waited. And
+        # it wasn't buying anything, because a late same-height candidate is
+        # still handled perfectly well after the fact: it is simply a chain
+        # of equal cumulative work with a lower vdf_output, which is exactly
+        # what is_better_than already resolves. Settling a height and
+        # working on the next one are independent, so they shouldn't block
+        # each other. See _reorg_to_sibling.
+        own_finished = False
 
         # Process anything that arrived in the drain at the very top of
         # this cycle (before `cs` was even known) through the same path
         # the wait loop below uses -- see pre_cycle_blocks's comment.
         for blk in pre_cycle_blocks:
-            settle_deadline = self._consider_inbound_block(
-                blk, cs, accumulated_blocks, settle_deadline)
+            self._consider_inbound_block(blk, cs, accumulated_blocks)
 
         with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
             _fut = _pool.submit(
@@ -523,27 +524,14 @@ class Node:
                 block_mod.vdf_challenge(cs.tip["hash"], self.addr), iterations, handle)
             last_heartbeat = vdf_start
             while True:
-                now = time.monotonic()
                 if _fut.done():
-                    own_finished_early = True
-                    if settle_deadline is None:
-                        settle_deadline = now + self.settle_window_seconds
-                elif settle_deadline is not None and now >= settle_deadline:
-                    # Never finished in time; give up on this cycle's own
-                    # candidate rather than let it run to completion against
-                    # a height that's already settled elsewhere -- every
-                    # second spent finishing it now is a second not spent
-                    # starting the next (still fully live) height.
-                    handle.cancel()
-                    break
-                if own_finished_early and (settle_deadline is None or now >= settle_deadline):
+                    own_finished = True
                     break
 
                 self._retry_unconfirmed_spreads()
                 new_blocks = self._drain_queue(timeout=1)
                 for blk in new_blocks:
-                    settle_deadline = self._consider_inbound_block(
-                        blk, cs, accumulated_blocks, settle_deadline)
+                    self._consider_inbound_block(blk, cs, accumulated_blocks)
 
                 now = time.monotonic()
                 if now - last_heartbeat >= VDF_HEARTBEAT_INTERVAL_SECONDS:
@@ -553,15 +541,25 @@ class Node:
                     self.status_line = (f"computing VDF for block {cs.height + 1} "
                                         f"({elapsed:.0f}s elapsed)")
                     last_heartbeat = now
+
                 # Mid-wait sync happens on evidence, not on a timer: a
                 # block from a height above ours landed in the drain above
                 # and set the hint. Nothing arriving means nothing to do.
                 if self._sync_if_triggered():
-                    # A strictly longer chain was just adopted -- this
-                    # cycle's candidate is provably dead already (see the
-                    # self.cs-is-not-cs check below), no reason to let the
-                    # VDF keep running to find that out later.
                     handle.cancel()
+
+                if self.cs is not cs:
+                    # The tip moved on (a sync, or a sibling that beat our
+                    # own tip). What we're computing is for a parent that
+                    # is no longer ours, so it can never be committed --
+                    # stop paying for it and start the next height now
+                    # rather than finding out later.
+                    handle.cancel()
+                    break
+
+                if self._should_abandon(cs, accumulated_blocks, vdf_start):
+                    handle.cancel()
+                    break
 
             own_cancelled = handle._cancelled
             if not own_cancelled:
@@ -570,10 +568,9 @@ class Node:
                 except vdf_mod.Cancelled:
                     own_cancelled = True
             if own_cancelled and not _fut.done():
-                # cancel() was called (sync adopted a better chain, or the
-                # settle window fired) but the underlying prove() call
-                # hasn't unwound yet -- block until it does; chiavdf has no
-                # async cancel, only "stop at the next poll of the shutdown
+                # cancel() was called but the underlying prove() hasn't
+                # unwound yet -- block until it does; chiavdf has no async
+                # cancel, only "stop at the next poll of the shutdown
                 # file", so this wait is normally short but not zero.
                 try:
                     _fut.result()
@@ -581,9 +578,7 @@ class Node:
                     pass
 
         if own_cancelled:
-            log.info("[vdf] own candidate abandoned for height=%d "
-                     "(settle window elapsed or tip changed before finishing)",
-                     cs.height + 1)
+            log.info("[vdf] own candidate abandoned for height=%d", cs.height + 1)
         else:
             log.info("[vdf] proof ready  height=%d  seconds=%.1f  iterations=%d",
                      cs.height + 1, vdf_seconds, iterations)
@@ -621,10 +616,10 @@ class Node:
             return
         self._spread(candidate, gossip_mod.KIND_BLOCK, candidate["hash"])
 
-        # Drain anything that arrived just as VDF completed, then pick winner.
-        # All peer candidates should already be in accumulated_blocks since VDFs
-        # take roughly the same time. _drain_queue() with no timeout flushes
-        # whatever is already in the queue without blocking.
+        # Flush whatever landed while the VDF was finishing, without
+        # blocking, then decide. Anything that arrives after this point is
+        # not lost: a same-height sibling with a lower vdf_output is just a
+        # better chain, and _reorg_to_sibling takes it locally, for free.
         peer_blocks = accumulated_blocks + self._drain_queue()
         # Pass cs explicitly; self.cs may have advanced during drain if syncer fired.
         winner, relay = self._pick_winner(cs, candidate, peer_blocks)
@@ -632,28 +627,67 @@ class Node:
             return
         self._commit(winner, relay=relay)
 
-    def _consider_inbound_block(self, blk, cs, accumulated_blocks, settle_deadline):
-        """Record an inbound block for later _pick_winner consideration,
-        and if it validates as a real candidate for cs.height+1, relay it
-        and arm (or record a gap sample against) the settle window.
-        Returns the possibly-newly-armed settle_deadline; callers reassign
-        their local variable from it (kept a return value, not mutated
-        state, so this has one obvious call site per block regardless of
-        whether that block showed up before the wait loop started or
-        during it)."""
+    def _consider_inbound_block(self, blk, cs, accumulated_blocks):
+        """Record an inbound block for this cycle's winner pick."""
         accumulated_blocks.append(blk)
-        if not self._validate_candidate(blk, cs):
-            return settle_deadline
-        arrived_at = time.monotonic()
-        if settle_deadline is None:
-            settle_deadline = arrived_at + self.settle_window_seconds
-            log.info("[vdf] valid peer candidate for height=%d seen; "
-                     "settle window armed (%.1fs)",
-                     cs.height + 1, self.settle_window_seconds)
-        else:
-            first_candidate_at = settle_deadline - self.settle_window_seconds
-            self._candidate_gap_seconds.append(arrived_at - first_candidate_at)
-        return settle_deadline
+        self._validate_candidate(blk, cs)
+
+    def _should_abandon(self, cs, accumulated_blocks, vdf_start):
+        """Whether to stop computing this height because we can no longer
+        plausibly land in time to matter.
+
+        Only asked once the height is contested: with no competitor in hand
+        there is nothing to lose by finishing, and everything to lose by
+        stopping.
+
+        Once contested, the height stays open only until somebody builds on
+        it -- at that point the chain on top carries strictly more work and
+        no same-height candidate of ours can win, however good its output.
+        So the question is whether we can finish inside roughly one more
+        block interval, and both sides of that are measured, not assumed:
+        how long our own evaluations actually take (_own_build_seconds) and
+        how fast the chain is actually running (block_time_stats). No
+        settle-window constant, and nothing to tune.
+
+        Erring either way is survivable, which is why a rough estimate is
+        enough: abandoning slightly early forfeits a long-odds draw,
+        abandoning slightly late costs part of a head start on the next
+        height. Both are bounded; idling was not.
+        """
+        if not accumulated_blocks:
+            return False
+        own_median = self.own_vdf_median()
+        if own_median is None:
+            return False   # never finished one; no basis to predict this one
+        stats = block_mod.block_time_stats(cs.chain, len(cs.chain) - 1)
+        if stats is None or not stats["median"]:
+            return False
+        remaining = own_median - (time.monotonic() - vdf_start)
+        return remaining > stats["median"]
+
+    def _reorg_to_sibling(self, blk, cs):
+        """Take a same-height alternative to our own tip when it is the
+        better chain, locally and without asking anyone anything.
+
+        This is what makes waiting unnecessary. A candidate for a height we
+        have already committed is not late and it is not lost: swap our tip
+        for it and the result is a chain of equal cumulative work whose tip
+        has a lower vdf_output, which is precisely what is_better_than
+        prefers. We can build that alternative ourselves out of the chain we
+        already hold, so settling the height costs no round trip and does
+        not have to happen before moving on to the next one.
+        """
+        if blk.get("height") != cs.height or cs.height == 0:
+            return False
+        if blk.get("previous_hash") != cs.chain[-2]["hash"]:
+            return False
+        if blk.get("hash") == cs.tip["hash"]:
+            return False
+        ok, _err = self.apply_better_chain(cs.chain[:-1] + [blk])
+        if ok:
+            log.info("[reorg] took sibling at height=%d hash=%s (lower vdf_output)",
+                     blk["height"], blk["hash"][:12])
+        return ok
 
     def _validate_candidate(self, blk, cs):
         """True if blk is a fully validated candidate for cs.height+1
@@ -661,9 +695,9 @@ class Node:
 
         This is the one gate standing between an attacker-crafted,
         zero-cost "block" message and aborting this node's own in-flight
-        VDF (via the settle-window state this return value feeds in
-        _run_cycle). Crafting a fake block message costs nothing; the work
-        it would cancel costs ~120s. A block that hasn't cleared real
+        VDF (via _should_abandon, which this return value feeds). Crafting
+        a fake block message costs nothing; the work it would cancel costs
+        ~120s. A block that hasn't cleared real
         block_mod.validate() must never be allowed to influence that.
 
         Deliberately does not relay: peer_udp's MT_BLOCK dispatch already
@@ -689,7 +723,7 @@ class Node:
         cs: the ChainState candidate was built against; passed explicitly so
         this method is immune to self.cs advancing during the drain window.
         candidate: this node's own finished block, or None if it abandoned
-        its own attempt this cycle (settle window elapsed before finishing).
+        its own attempt this cycle (see _should_abandon).
         """
         tip = cs.tip
 
@@ -778,12 +812,6 @@ class Node:
             msg["reply"].put(self.submit_tx(msg["tx"]))
         elif t == "tx":
             self._handle_inbound_tx(msg)
-        elif t == "set_settle_window":
-            try:
-                self._set_settle_window_seconds(msg["seconds"])
-                msg["reply"].put((True, None))
-            except (TypeError, ValueError) as e:
-                msg["reply"].put((False, str(e)))
 
     def _spread(self, item, kind, item_hash):
         """Originate an item and remember it until we see it come back."""
@@ -842,6 +870,16 @@ class Node:
             return SILENCE_FALLBACK_SECONDS
         return stats["median"] * SILENCE_MULTIPLE
 
+    def _background_poll_interval(self):
+        """Seconds between background samples, in units of the chain's own
+        measured pace rather than wall-clock guesswork."""
+        chain = self.cs.chain
+        stats = block_mod.block_time_stats(chain, len(chain) - 1)
+        median = stats["median"] if stats and stats["median"] else None
+        if median is None:
+            return SILENCE_FALLBACK_SECONDS * BACKGROUND_POLL_BLOCK_INTERVALS
+        return median * BACKGROUND_POLL_BLOCK_INTERVALS
+
     def _sync_if_triggered(self):
         """Sync only when something says to. Returns True if a better chain
         was adopted.
@@ -853,6 +891,11 @@ class Node:
         - Silence past _silence_threshold(), the only case no inbound block
           can ever report. Here there is nobody to ask in particular, so we
           fall back to the highest peer we know of.
+        - A rare background sample of a *random* peer. Blocks arriving
+          proves the network is alive, not that we are on its best chain:
+          an eclipsed or partitioned node sees a healthy stream and never
+          goes silent. This is the only trigger that looks outside the set
+          currently feeding us, which is why it picks at random.
 
         Either way the peer's answer is validated before it is believed, so
         a lying hint costs one failed attempt against the liar, nothing
@@ -862,27 +905,47 @@ class Node:
         assert threading.current_thread() is self._loop_thread
         peer = self._sync_hint
         self._sync_hint = None
+        hinted = peer is not None
 
         if peer is None:
             now = time.monotonic()
             threshold = self._silence_threshold()
-            if now - self._last_block_seen < threshold:
+            silent = (now - self._last_block_seen >= threshold
+                      and now - self._last_silence_poll >= threshold)
+            if silent:
+                # Nobody to ask in particular, so ask whoever claims most.
+                peer = self._best_known_peer()
+                reason = f"no block for {now - self._last_block_seen:.0f}s"
+                self._last_silence_poll = now
+            elif now - self._last_background_poll >= self._background_poll_interval():
+                # Deliberately random, not best-known: this exists to hear
+                # from outside whatever set is currently feeding us.
+                peer = self.pool.random()
+                reason = "background sample"
+                self._last_background_poll = now
+            else:
                 return False
-            if now - self._last_silence_poll < threshold:
-                return False
-            peer = self._best_known_peer()
             if peer is None:
                 return False
-            log.info("[sync] no block for %.0fs, polling %s",
-                     now - self._last_block_seen, peer)
-            self._last_silence_poll = now
+            log.debug("[sync] %s, polling %s", reason, peer)
 
-        return self.syncer.check_and_sync(
+        adopted = self.syncer.check_and_sync(
             self.cs.chain,
             lambda chain: self.apply_better_chain(chain)[0],
             peer=peer,
             info_timeout=SYNC_INFO_TIMEOUT_SECONDS,
+            local_work=self.cs.cumulative_iterations,
         )
+        if hinted and not adopted:
+            # The hint was a block we could not validate -- we don't have
+            # its parents -- so acting on it is a bet, and this peer just
+            # lost it. Without a cost here, one crafted datagram buys an
+            # attacker a sync attempt, repeatable for as long as they care
+            # to send them. A strike is the existing price for a peer that
+            # wastes our time, and enough of them evict it (PeerPool).
+            log.debug("[sync] hint from %s led nowhere", peer)
+            self.pool.strike(peer)
+        return adopted
 
     def _best_known_peer(self):
         """The peer we last saw claiming the highest chain, else any peer.
@@ -944,6 +1007,10 @@ class Node:
                 return
             self.gossip.relay(blk, gossip_mod.KIND_BLOCK, blk["hash"],
                               sender, stemming=stemming)
+        elif height == cs.height:
+            # A sibling of our own tip. Not late, not lost: if it is the
+            # better chain we take it right now, locally, no round trip.
+            self._reorg_to_sibling(blk, cs)
         elif height > cs.height and sender:
             log.info("[sync] peer %s has height %d, we're at %d",
                      sender, height, cs.height)

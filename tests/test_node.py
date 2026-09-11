@@ -975,103 +975,6 @@ class TestRunCycleSync:
 
 
 # ---------------------------------------------------------------------------
-# 16. _run_cycle: settle window (abandon own VDF once it can't matter)
-# ---------------------------------------------------------------------------
-
-class TestRunCycleSettleWindow:
-    """A peer's validated candidate for the height we're building arms a
-    short settle timer; once it elapses without our own VDF finishing, we
-    abort our own attempt and resolve the height from whatever candidates
-    we have instead of grinding to completion against a height that's
-    likely already settled elsewhere. Nothing unvalidated may ever reach
-    this path (see _validate_candidate's docstring)."""
-
-    def _cancellable_fake_evaluate(self, total_seconds, poll=0.02):
-        """Unlike _slow_fake_evaluate, this one actually honors handle,
-        the same way real chiavdf's shutdown_file polling does -- needed
-        here since these tests assert on the cancel path actually firing
-        promptly, not just on it eventually returning garbage."""
-        def _evaluate(challenge, iterations, handle=None):
-            elapsed = 0.0
-            while elapsed < total_seconds:
-                if handle is not None and handle._cancelled:
-                    raise node_mod.vdf_mod.Cancelled()
-                time.sleep(poll)
-                elapsed += poll
-            return "aa" * 100, "bb" * 100, total_seconds
-        return _evaluate
-
-    def test_peer_candidate_arms_settle_window(
-        self, node_env, monkeypatch
-    ):
-        node, *_, gossip, syncer, pool, net_q = node_env
-        node.settle_window_seconds = 0.05
-        monkeypatch.setattr(node_mod.vdf_mod, "evaluate",
-                            self._cancellable_fake_evaluate(2.0))
-        commit_spy = MagicMock(wraps=node._commit)
-        monkeypatch.setattr(node, "_commit", commit_spy)
-
-        g = node.cs.tip
-        peer_blk = make_block(1, g["hash"], [], builder_index=1, vdf_output="aa")
-        net_q.put({"type": "block", "block": peer_blk})
-
-        node._run_cycle()
-
-        # Own attempt abandoned; the peer's block is the only entrant, so
-        # it's what gets committed.
-        commit_spy.assert_called_once()
-        winner = commit_spy.call_args.args[0]
-        assert winner["hash"] == peer_blk["hash"]
-        assert commit_spy.call_args.kwargs.get("relay") is True
-
-    def test_own_vdf_finishing_first_still_commits_normally(
-        self, node_env, monkeypatch
-    ):
-        """Sanity check: with no peer candidate ever arriving, a fast own
-        VDF still wins the way it always did -- the settle window just
-        adds its own short (here: tiny) wait afterward before finalizing."""
-        node, *_ = node_env
-        node.settle_window_seconds = 0.01
-        monkeypatch.setattr(node_mod.vdf_mod, "evaluate",
-                            self._cancellable_fake_evaluate(0.05))
-        commit_spy = MagicMock()
-        monkeypatch.setattr(node, "_commit", commit_spy)
-
-        node._run_cycle()
-
-        commit_spy.assert_called_once()
-
-    def test_unvalidated_block_never_arms_settle_window_or_gets_relayed(
-        self, node_env, monkeypatch
-    ):
-        """A garbage/invalid same-height message must never trigger relay
-        or the settle timer -- see _validate_candidate's
-        docstring on why (a free griefing vector otherwise: crafting a
-        fake block costs nothing, but aborting a real in-flight VDF does
-        not). Own VDF should finish and win normally, undisturbed."""
-        node, *_, gossip, syncer, pool, net_q = node_env
-        node.settle_window_seconds = 0.05
-        monkeypatch.setattr(node_mod.vdf_mod, "evaluate",
-                            self._cancellable_fake_evaluate(0.15))
-        commit_spy = MagicMock(wraps=node._commit)
-        monkeypatch.setattr(node, "_commit", commit_spy)
-
-        g = node.cs.tip
-        garbage = make_block(1, g["hash"], [], builder_index=1, vdf_output="aa")
-        # An out-of-range height fails _validate_candidate's
-        # height check unconditionally, regardless of what the autouse
-        # vdf.verify mock would otherwise let through.
-        garbage["height"] = 999
-        net_q.put({"type": "block", "block": garbage})
-
-        node._run_cycle()
-
-        commit_spy.assert_called_once()
-        winner = commit_spy.call_args.args[0]
-        assert winner.get("builder") == node.addr  # own candidate won, not the garbage
-
-
-# ---------------------------------------------------------------------------
 # 17. Rework: an item that never comes back gets re-sent
 # ---------------------------------------------------------------------------
 
@@ -1134,3 +1037,206 @@ class TestRework:
             node._echo_seconds.append(4.0)
         # p95 of the node's own round trips, doubled for the ordinary tail.
         assert node._echo_deadline_seconds() == 8.0
+
+
+# ---------------------------------------------------------------------------
+# 18. Never idle: advance now, settle the height afterwards
+# ---------------------------------------------------------------------------
+
+class TestNoIdleWaiting:
+    def _fake_evaluate(self, seconds):
+        def _evaluate(challenge, iterations, handle=None):
+            elapsed = 0.0
+            while elapsed < seconds:
+                if handle is not None and handle._cancelled:
+                    raise node_mod.vdf_mod.Cancelled()
+                time.sleep(0.02)
+                elapsed += 0.02
+            return "aa" * 100, "bb" * 100, seconds
+        return _evaluate
+
+    def test_sibling_with_lower_output_is_taken_locally(self, node_env):
+        """A candidate for a height we already committed is not late. It is
+        a chain of equal work with a lower vdf_output, so we swap to it --
+        built from the chain we already hold, no round trip, nobody asked."""
+        node, *_, syncer, pool, net_q = node_env
+        g = node.cs.tip
+        mine  = make_block(1, g["hash"], [], builder_index=0, vdf_output="zz")
+        theirs = make_block(1, g["hash"], [], builder_index=1, vdf_output="aa")
+        node._commit(mine)
+        assert node.cs.tip["hash"] == mine["hash"]
+
+        node._handle_inbound_block(
+            {"block": theirs, "sender": "1.2.3.4:1", "stemming": False}, [])
+
+        assert node.cs.tip["hash"] == theirs["hash"]
+        syncer.check_and_sync.assert_not_called()   # settled for free
+
+    def test_sibling_with_higher_output_is_ignored(self, node_env):
+        node, *_ = node_env
+        g = node.cs.tip
+        mine   = make_block(1, g["hash"], [], builder_index=0, vdf_output="aa")
+        theirs = make_block(1, g["hash"], [], builder_index=1, vdf_output="zz")
+        node._commit(mine)
+        node._handle_inbound_block(
+            {"block": theirs, "sender": "1.2.3.4:1", "stemming": False}, [])
+        assert node.cs.tip["hash"] == mine["hash"]
+
+    def test_does_not_abandon_while_uncontested(self, node_env):
+        """With no competitor in hand there is nothing to lose by finishing
+        and everything to lose by stopping."""
+        node, *_ = node_env
+        node._own_build_seconds.extend([999.0] * 5)
+        assert node._should_abandon(node.cs, [], time.monotonic()) is False
+
+    def test_does_not_abandon_without_a_basis_to_predict(self, node_env):
+        """A node that has never finished an evaluation can't estimate how
+        long this one has left, so it doesn't guess -- it finishes."""
+        node, *_ = node_env
+        g = node.cs.tip
+        contender = make_block(1, g["hash"], [], builder_index=1)
+        assert node._own_build_seconds == collections_deque_empty()
+        assert node._should_abandon(node.cs, [contender], time.monotonic()) is False
+
+
+def collections_deque_empty():
+    import collections
+    return collections.deque(maxlen=30)
+
+
+# ---------------------------------------------------------------------------
+# 19. Hints are evidence, not proof
+# ---------------------------------------------------------------------------
+
+class TestLyingPeers:
+    def test_far_ahead_block_is_never_relayed(self, node_env):
+        """We cannot validate a block whose parents we don't have, so we
+        must not pass it on: relaying what we can't vouch for would let one
+        crafted datagram spend the whole network's bandwidth."""
+        node, _, __, gossip, *_ = node_env
+        lie = make_block(999999, "00" * 32, [])
+        node._handle_inbound_block(
+            {"block": lie, "sender": "1.2.3.4:1", "stemming": False}, [])
+        gossip.relay.assert_not_called()
+
+    def test_far_ahead_block_only_decides_who_to_ask(self, node_env):
+        node, *_ = node_env
+        lie = make_block(999999, "00" * 32, [])
+        node._handle_inbound_block(
+            {"block": lie, "sender": "1.2.3.4:1", "stemming": False}, [])
+        assert node._sync_hint == "1.2.3.4:1"
+
+    def test_a_hint_that_leads_nowhere_costs_the_liar_a_strike(self, node_env):
+        """Believing a hint is never what decides truth: the peer's chain
+        still has to validate. One that doesn't is a peer worth trusting
+        less, or an attacker gets a free sync attempt per crafted datagram."""
+        node, *_, syncer, pool, net_q = node_env
+        syncer.check_and_sync.return_value = False
+        node._sync_hint = "1.2.3.4:1"
+        node._sync_if_triggered()
+        pool.strike.assert_called_once_with("1.2.3.4:1")
+
+    def test_a_hint_that_pays_off_does_not_strike(self, node_env):
+        node, *_, syncer, pool, net_q = node_env
+        syncer.check_and_sync.return_value = True
+        node._sync_hint = "1.2.3.4:1"
+        node._sync_if_triggered()
+        pool.strike.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 20. Privacy switch
+# ---------------------------------------------------------------------------
+
+class TestAdvertisedAddress:
+    def test_off_by_default_advertises_the_real_address(self, node_env):
+        node, *_ = node_env
+        assert node.advertised_addr == node.addr
+
+    def test_on_advertises_something_else(self, node_env, monkeypatch):
+        node, *_ = node_env
+        monkeypatch.setenv("LAPSECOIN_PRIVATE_ADDRESS", "1")
+        assert node.advertised_addr != node.addr
+        assert node.advertised_addr   # still advertises something, not nothing
+
+    def test_generated_address_is_stable_across_calls(self, node_env, monkeypatch):
+        node, *_ = node_env
+        monkeypatch.setenv("LAPSECOIN_PRIVATE_ADDRESS", "1")
+        assert node.advertised_addr == node.advertised_addr
+
+    def test_an_explicitly_configured_address_is_used(self, node_env, monkeypatch):
+        node, *_ = node_env
+        monkeypatch.setenv("LAPSECOIN_PRIVATE_ADDRESS", "1")
+        monkeypatch.setenv("LAPSECOIN_ADVERTISED_ADDRESS", "chosen.addr")
+        assert node.advertised_addr == "chosen.addr"
+
+    def test_env_overrides_stored_value_and_is_marked_forced(self, node_env, monkeypatch):
+        import settings as settings_mod
+        node, *_ = node_env
+        node.settings.set(settings_mod.PRIVATE_ADDRESS, False)
+        monkeypatch.setenv("LAPSECOIN_PRIVATE_ADDRESS", "1")
+        assert node.settings.get(settings_mod.PRIVATE_ADDRESS) is True
+        assert node.settings.forced_by_env(settings_mod.PRIVATE_ADDRESS) is True
+
+
+# ---------------------------------------------------------------------------
+# 21. Background sampling: blocks arriving is not proof we're on the best chain
+# ---------------------------------------------------------------------------
+
+class TestBackgroundPoll:
+    def test_healthy_stream_of_blocks_still_gets_sampled_eventually(
+        self, node_env, monkeypatch
+    ):
+        """An eclipsed node, or one partitioned onto a consistent but
+        inferior fork, sees blocks arriving normally and never goes silent,
+        so neither the hint nor the silence trigger ever fires. This is the
+        only trigger that looks outside whatever set is feeding us."""
+        node, *_, syncer, pool, net_q = node_env
+        pool.random.return_value = "random.peer:1"
+        monkeypatch.setattr(node, "_background_poll_interval", lambda: 1.0)
+        node._last_block_seen = time.monotonic()      # not silent
+        node._last_background_poll = time.monotonic() - 10
+
+        assert node._sync_if_triggered() is not None
+        syncer.check_and_sync.assert_called_once()
+        assert syncer.check_and_sync.call_args.kwargs["peer"] == "random.peer:1"
+
+    def test_background_sample_picks_at_random_not_best_known(
+        self, node_env, monkeypatch
+    ):
+        """Best-known is exactly who an eclipsing attacker would arrange for
+        us to keep asking."""
+        node, *_, syncer, pool, net_q = node_env
+        pool.random.return_value = "random.peer:1"
+        pool.snapshot.return_value = [("attacker:1", 0, True, 10**9, "", "", None)]
+        monkeypatch.setattr(node, "_background_poll_interval", lambda: 1.0)
+        node._last_block_seen = time.monotonic()
+        node._last_background_poll = time.monotonic() - 10
+
+        node._sync_if_triggered()
+        assert syncer.check_and_sync.call_args.kwargs["peer"] == "random.peer:1"
+
+    def test_not_sampled_again_immediately(self, node_env, monkeypatch):
+        node, *_, syncer, pool, net_q = node_env
+        pool.random.return_value = "random.peer:1"
+        monkeypatch.setattr(node, "_background_poll_interval", lambda: 1.0)
+        node._last_block_seen = time.monotonic()
+        node._last_background_poll = time.monotonic() - 10
+
+        node._sync_if_triggered()
+        syncer.check_and_sync.reset_mock()
+        node._sync_if_triggered()
+        syncer.check_and_sync.assert_not_called()
+
+    def test_background_sample_does_not_strike_on_a_quiet_answer(self, node_env, monkeypatch):
+        """Only a hint we chose to act on is a bet that can be lost. A
+        random sample finding nothing is the normal, expected outcome."""
+        node, *_, syncer, pool, net_q = node_env
+        pool.random.return_value = "random.peer:1"
+        syncer.check_and_sync.return_value = False
+        monkeypatch.setattr(node, "_background_poll_interval", lambda: 1.0)
+        node._last_block_seen = time.monotonic()
+        node._last_background_poll = time.monotonic() - 10
+
+        node._sync_if_triggered()
+        pool.strike.assert_not_called()

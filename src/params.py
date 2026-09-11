@@ -27,18 +27,6 @@ EMISSION_DECAY_NUMERATOR   = 1386294265029292275522718605160789
 
 BLOCK_CYCLE_SECONDS = 120
 
-# Default settle window: once a node has either finished its own VDF for
-# the current height, or received (and validated) a peer's candidate for
-# it, it waits this many more seconds for any other near-simultaneous
-# candidates before picking a winner from whatever's arrived and moving
-# on -- rather than an in-progress VDF running all the way to completion
-# against a height that may already be settled. Local, per-node policy,
-# not a consensus rule (nothing in block.validate() depends on it), so
-# each operator can override it from their own node's private settings
-# page; this is only the shipped default. See node.py's SETTLE_WINDOW
-# handling and api.py's /settings route.
-SETTLE_WINDOW_SECONDS_DEFAULT = 15.0
-
 BLOCK_SIZE_LIMIT = 10_000_000  # 10 MB hard cap, raised only by network upgrade
 
 MAX_PEERS           = 125

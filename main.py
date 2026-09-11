@@ -318,7 +318,9 @@ def main():
     def _tip_provider():
         chain = node.view.chain
         tip   = chain[-1]
-        return tip.get("height", 0), tip.get("hash", ""), node.addr, LOCAL_VERSION
+        return (tip.get("height", 0), tip.get("hash", ""),
+                node.advertised_addr, LOCAL_VERSION,
+                node.cs.cumulative_iterations)
 
     udp.set_chain_provider(_chain_provider)
     udp.set_tip_provider(_tip_provider)
