@@ -45,7 +45,7 @@
 </div>
 
 <div class="card">
-  <div class="card-title">Privacy</div>
+  <div class="card-title">Node settings</div>
   {% for s in settings if s.key == "private_address" %}
   <div class="form-row">
     <label for="{{ s.key }}">
@@ -54,24 +54,15 @@
       {{ s.label }}
     </label>
     <span class="stat-sub">
+      {% if privacy_addr %}
+      Advertising <code>{{ advertised_addr[:24] }}&hellip;</code>{% if advertised_addr == privacy_addr %} (privacy address){% endif %}.
+      {% else %}
       {{ s.help }}
+      {% endif %}
       {% if s.forced %}<strong>Set by {{ s.env_name }}.</strong>{% endif %}
     </span>
   </div>
   {% endfor %}
-  <div class="stat-sub" style="margin-top:.4rem">
-    {% if privacy_addr %}
-    Advertising <code>{{ advertised_addr[:24] }}&hellip;</code>
-    {% if advertised_addr == privacy_addr %}(generated privacy address){% else %}(this node's own address){% endif %}.
-    Turning the switch on or off swaps between the two, no new address is created.
-    {% else %}
-    Privacy address not generated yet; it appears the next time this node restarts.
-    {% endif %}
-  </div>
-</div>
-
-<div class="card">
-  <div class="card-title">Consensus tuning</div>
   {% for s in settings if s.key != "private_address" %}
   <div class="form-row">
     <label for="{{ s.key }}">{{ s.label }}</label>

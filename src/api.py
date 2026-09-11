@@ -651,7 +651,7 @@ def _shared_read_only_routes(app, node, pool, limiter,
         ]
 
     def _self_info():
-        return {"wallet": node.addr, "height": node.view.chain[-1].get("height", 0),
+        return {"wallet": node.advertised_addr, "height": node.view.chain[-1].get("height", 0),
                 "version": LOCAL_VERSION, "addr": _self_external_addr()}
 
     @app.route("/peers", endpoint=pfx+"peers")
@@ -666,7 +666,7 @@ def _shared_read_only_routes(app, node, pool, limiter,
                                peer_count=len(all_rows), page=page, total_pages=total_pages,
                                page_window=_pagination_window(page, total_pages),
                                has_prev=page > 1, has_next=end < len(all_rows),
-                               self_height=self_height, self_wallet=node.addr,
+                               self_height=self_height, self_wallet=node.advertised_addr,
                                self_version=LOCAL_VERSION, self_addr=_self_external_addr())
 
     @app.route("/odds", endpoint=pfx+"odds")

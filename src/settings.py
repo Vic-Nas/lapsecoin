@@ -56,9 +56,8 @@ class Setting:
 PRIVATE_ADDRESS = Setting(
     "private_address", False, bool,
     label="Hide wallet address from peers",
-    help="Advertises a separate address instead of the one this node "
-         "builds blocks with. The builder address stays public either way, "
-         "it has to be, to be paid.",
+    help="Advertises a separate, already-generated address instead of "
+         "the one this node builds blocks with.",
 )
 
 ADVERTISED_ADDRESS = Setting(
