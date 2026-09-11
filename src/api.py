@@ -325,9 +325,11 @@ def fee_estimate(node):
 # rest of the site's self-contained, offline-friendly UI)
 # ---------------------------------------------------------------------------
 
-_CHART_W, _CHART_H = 860, 232
-# Bottom padding carries the height axis: a row of grips, then their labels.
-_CHART_PAD_L, _CHART_PAD_T, _CHART_PAD_B = 46, 10, 34
+_CHART_W, _CHART_H = 860, 220
+# The bottom padding was already empty space under the plot; the height
+# axis moves into it rather than making the chart taller, so the page
+# still fits without scrolling.
+_CHART_PAD_L, _CHART_PAD_T, _CHART_PAD_B = 46, 10, 22
 
 
 _TICK_COUNT = 5  # labeled horizontal gridlines, evenly spaced across the axis

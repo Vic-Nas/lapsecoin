@@ -56,7 +56,7 @@
     <line x1="{{ tx }}" y1="{{ chart.plot_top }}" x2="{{ tx }}" y2="{{ chart.plot_bottom }}"
           stroke="var(--rule-lt)" stroke-width="0.5" opacity="0.6"/>
     {% endif %}
-    <text x="{{ tx }}" y="{{ chart.plot_bottom + 21 }}" font-size="10" fill="var(--ink-dim)"
+    <text x="{{ tx }}" y="{{ chart.plot_bottom + 17 }}" font-size="10" fill="var(--ink-dim)"
           text-anchor="{{ 'start' if loop.first else ('end' if loop.last else 'middle') }}">{{ t.height }}</text>
     {% endfor %}
 
@@ -88,12 +88,9 @@
     {% endif %}
   </svg>
   </div>
-  <div id="odds-zoom-bar" style="display:none;margin-top:.5rem">
-    <button type="button" id="odds-zoom-reset" class="btn-sm">Reset spacing</button>
-  </div>
-  {% if chart.legend %}
-  <div id="odds-legend" style="display:flex;flex-wrap:wrap;gap:.4rem 1rem;margin-top:.6rem">
-    {% for entry in chart.legend %}
+  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:.4rem 1rem;margin-top:.6rem">
+  <div id="odds-legend" style="display:flex;flex-wrap:wrap;gap:.4rem 1rem">
+    {% for entry in chart.legend or [] %}
     <span style="display:inline-flex;align-items:center;gap:.35rem;font-size:.8rem;color:var(--ink-dim)">
       <span style="width:9px;height:9px;border-radius:50%;background:{{ entry.color }};display:inline-block"></span>
       {% if entry.label %}<span class="hash-short" style="display:inline;max-width:11ch" title="{{ entry.label }}">{{ entry.label[:10] }}&hellip;</span>{% else %}<span>Other</span>{% endif %}
@@ -101,20 +98,27 @@
     </span>
     {% endfor %}
   </div>
-  {% endif %}
+  <button type="button" id="odds-zoom-reset" class="btn-sm" style="display:none">Reset spacing</button>
+  </div>
   <p class="stat-sub" style="margin-top:.4rem">
     Block interval is a proxy for the winning builder's real build time. Color marks the
     top 3 builders by block count in this window; everyone else shares the muted "Other"
     color. The chart is zoomed to the typical range, so a block outside it is drawn flat
     against the edge (hover for its real value). That changes only where the line is
     drawn, never the odds figure above, which counts every interval.
-  </p>
-  <p class="stat-sub" id="odds-axis-hint" style="display:none;margin-top:.25rem">
-    Drag a handle on the height axis to give the blocks beside it more room. Every block
-    stays on the chart, so spreading one stretch out squeezes its neighbour. Your spacing
-    is remembered on this browser.
+    <span id="odds-axis-hint" style="display:none">Drag a marker on the height axis to give
+    the blocks beside it more room; every block stays on the chart, so spreading one stretch
+    out squeezes its neighbour.</span>
   </p>
 </div>
+<style>
+  /* The mark is a slider thumb, so it takes the cursor and the emphasis
+     of one. Held state is set while dragging, since the pointer is
+     captured on the svg and can travel well away from the mark itself. */
+  .x-grip { cursor: ew-resize; }
+  .x-grip path { fill: var(--rule); transition: fill .12s; }
+  .x-grip:hover path, .x-grip.is-held path { fill: var(--accent); }
+</style>
 <script id="odds-initial" type="application/json">{{ {"chart": chart, "median": race.median}|tojson }}</script>
 <script>
 (function () {
@@ -207,15 +211,16 @@
         s += `<line x1="${x}" y1="${chart.plot_top}" x2="${x}" y2="${chart.plot_bottom}" stroke="var(--rule-lt)" stroke-width="0.5" opacity="0.6"/>`;
       }
       const anchor = i === 0 ? "start" : (last ? "end" : "middle");
-      s += `<text x="${x}" y="${chart.plot_bottom + 21}" font-size="10" fill="var(--ink-dim)" text-anchor="${anchor}" pointer-events="none">${t.height}</text>`;
+      s += `<text x="${x}" y="${chart.plot_bottom + 17}" font-size="10" fill="var(--ink-dim)" text-anchor="${anchor}" pointer-events="none">${t.height}</text>`;
       if (!end && canDrag) {
-        // Grip, plus a wider invisible target around it: the visible mark
-        // is small enough to place precisely and too small to hit.
-        s += `<g data-grip="${i}" style="cursor:ew-resize">` +
-             `<rect x="${x - 15}" y="${chart.plot_bottom}" width="30" height="26" fill="transparent"/>` +
-             `<rect x="${x - 7}" y="${chart.plot_bottom + 2}" width="14" height="8" rx="2" fill="var(--paper-2)" stroke="var(--rule)" stroke-width="1"/>` +
-             `<line x1="${x - 2.5}" y1="${chart.plot_bottom + 4}" x2="${x - 2.5}" y2="${chart.plot_bottom + 8}" stroke="var(--ink-dim)" stroke-width="1"/>` +
-             `<line x1="${x + 2.5}" y1="${chart.plot_bottom + 4}" x2="${x + 2.5}" y2="${chart.plot_bottom + 8}" stroke="var(--ink-dim)" stroke-width="1"/>` +
+        // A slider mark seated on the axis line, apex touching it, so it
+        // reads as something that slides along that line. The visible mark
+        // stays small enough to place a block precisely; the transparent
+        // rect around it is what you actually have to hit.
+        const b = chart.plot_bottom;
+        s += `<g class="x-grip${i === dragging ? " is-held" : ""}" data-grip="${i}">` +
+             `<rect x="${x - 13}" y="${b - 3}" width="26" height="20" fill="transparent"/>` +
+             `<path d="M ${x} ${b} l 4.5 5 l -9 0 Z"/>` +
              `<title>Drag to give the blocks either side of ${t.height} more or less room</title></g>`;
       }
     });
@@ -263,10 +268,10 @@
     }
     const svg = document.getElementById("odds-svg");
     if (svg) svg.innerHTML = renderChart(chart, medianVal);
-    const bar = document.getElementById("odds-zoom-bar");
-    if (bar) bar.style.display = (draggable(chart) && !isDefault(chart)) ? "block" : "none";
+    const reset = document.getElementById("odds-zoom-reset");
+    if (reset) reset.style.display = (draggable(chart) && !isDefault(chart)) ? "" : "none";
     const hint = document.getElementById("odds-axis-hint");
-    if (hint) hint.style.display = draggable(chart) ? "block" : "none";
+    if (hint) hint.style.display = draggable(chart) ? "inline" : "none";
   }
 
   const svgEl = document.getElementById("odds-svg");
@@ -280,6 +285,7 @@
       // that survives the repaint.
       svgEl.setPointerCapture(ev.pointerId);
       ev.preventDefault();
+      paint(lastChart, lastMedian);  // show the held state before any move
     });
     svgEl.addEventListener("pointermove", function (ev) {
       if (dragging < 0 || !lastChart) return;
