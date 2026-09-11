@@ -17,6 +17,15 @@ decides a height by the evaluation each builder paid for rather than by
 who reached us first; building on the next height throughout is what makes
 giving it a window cost nothing.
 
+The window runs from the first valid candidate anyone produced for that
+height (open_draw), not from our own completion, so it is the same
+interval on every node. Anchored to our own completion it would stretch
+by however long we took, handing a slower node a longer window and
+cancelling out the speed the chain is supposed to pay for. Finishing
+outside it is losing the height, which is also the whole basis of
+_should_abandon: work that cannot land inside the window cannot land at
+all, so it is dropped in favour of the next height.
+
 Flask threads read node.view (a NodeView snapshot). The node loop is the
 sole writer; every mutation publishes a new snapshot atomically.
 """
@@ -709,10 +718,6 @@ class Node:
         if winner is None:
             return
         self._commit(winner, relay=relay)
-        # Our own evaluation for this height finished, so everything that
-        # could enter its draw already has: _pick_winner just compared them
-        # all. Close it rather than leaving the window running.
-        self._close_draw()
 
     def _consider_inbound_block(self, blk, cs, accumulated_blocks):
         """Record an inbound block as a candidate for this cycle's draw,
@@ -726,6 +731,10 @@ class Node:
         network can actually produce rather than by what anyone can send.
         """
         if self._validate_candidate(blk, cs):
+            # First valid candidate for this height starts its draw, even
+            # though we have not adopted anything yet. That is the anchor
+            # every node shares; see open_draw.
+            self.open_draw(blk["height"])
             accumulated_blocks.append(blk)
 
     def _should_abandon(self, cs, accumulated_blocks, vdf_start):
@@ -736,14 +745,19 @@ class Node:
         there is nothing to lose by finishing, and everything to lose by
         stopping.
 
-        Once contested, the height stays open only until somebody builds on
-        it, at that point the chain on top carries strictly more work and
-        no same-height candidate of ours can win, however good its output.
-        So the question is whether we can finish inside roughly one more
-        block interval, and both sides of that are measured, not assumed:
-        how long our own evaluations actually take (_own_build_seconds) and
-        how fast the chain is actually running (block_time_stats). No
-        settle-window constant, and nothing to tune.
+        Once contested, the only thing our candidate can still win is the
+        draw, and the draw closes at a fixed moment (open_draw). So the
+        question is exactly whether we can finish before it does. Measured
+        on both sides, not assumed: how long our own evaluations actually
+        take (_own_build_seconds) against how much of the window is left.
+
+        Measuring against a whole block interval instead, as this did
+        before, is far too generous: a node running a minute behind the
+        leader would never abandon, would finish a block that missed every
+        draw it could have entered, and would start the next height a
+        minute late, every height, forever. Nothing it computed could ever
+        be used. Abandoning immediately costs it nothing it could have kept
+        and puts it back on the clock for the next height.
 
         Erring either way is survivable, which is why a rough estimate is
         enough: abandoning slightly early forfeits a long-odds draw,
@@ -755,22 +769,33 @@ class Node:
         own_median = self.own_vdf_median()
         if own_median is None:
             return False   # never finished one; no basis to predict this one
-        stats = block_mod.block_time_stats(cs.chain, len(cs.chain) - 1)
-        if stats is None or not stats["median"]:
-            return False
-        remaining = own_median - (time.monotonic() - vdf_start)
-        return remaining > stats["median"]
+        if self._draw_height != cs.height + 1:
+            return False   # no draw anchored for the height we're building
+        now = time.monotonic()
+        remaining   = own_median - (now - vdf_start)
+        window_left = self._draw_closes - now
+        return remaining > window_left
 
     def open_draw(self, height):
         """Open the draw for `height`: until it closes, a better candidate
-        for that height can still take the tip from the one we adopted."""
+        for that height can still take the tip from the one we adopted.
+
+        Anchored to the first valid candidate we see for that height, ours
+        or a peer's, and never restarted while it runs. The anchor has to
+        be an event every node observes at roughly the same moment, or the
+        window is a different length for each of them: anchored to our own
+        completion instead, a node that took 30s longer would keep
+        collecting for 30s longer, so the slower a node is the more time it
+        gets to be beaten, and the faster a node is the less its speed buys
+        it. Speed is the thing this chain pays for, so the window must not
+        stretch to accommodate whoever is behind. Finishing outside it is
+        simply losing the height.
+        """
+        if self._draw_height == height:
+            return
         self._draw_height = height
         self._draw_closes = time.monotonic() + self.settings.get(
             settings_mod.DRAW_WINDOW_SECONDS)
-
-    def _close_draw(self):
-        self._draw_height = None
-        self._draw_closes = 0.0
 
     def _draw_is_open(self, height):
         return (self._draw_height == height
@@ -1189,7 +1214,15 @@ class Node:
         elif height == cs.height:
             # A sibling of our own tip. Not late, not lost: if it is the
             # better chain we take it right now, locally, no round trip.
-            self._reorg_to_sibling(blk, cs)
+            # Passing on the ones that win: a node that already committed
+            # this height does not relay through the branch above, so
+            # without this a winning sibling only ever reaches whoever the
+            # builder reached directly. Bounded by the same check that let
+            # it win, only a strictly lower output gets this far, so at
+            # most a handful per height however many arrive.
+            if self._reorg_to_sibling(blk, cs):
+                self.gossip.relay(blk, gossip_mod.KIND_BLOCK, blk["hash"],
+                                  sender, stemming=stemming)
         elif height > cs.height and sender:
             log.info("[sync] peer %s has height %d, we're at %d",
                      sender, height, cs.height)

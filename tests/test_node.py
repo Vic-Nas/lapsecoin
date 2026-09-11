@@ -1315,7 +1315,7 @@ class TestDraw:
         better = make_block(1, g["hash"], [], builder_index=1, vdf_output="aa")
 
         node._commit(first)
-        node._close_draw()
+        node._draw_closes = time.monotonic() - 1     # window has run out
         node._handle_inbound_block(
             {"block": better, "sender": "1.2.3.4:1", "stemming": False}, [])
 
@@ -1335,9 +1335,12 @@ class TestDraw:
 
         assert node.cs.tip["hash"] == first["hash"]
 
-    def test_our_own_finished_candidate_closes_the_draw(self, node_env, monkeypatch):
-        """Once our own evaluation lands, _pick_winner has compared
-        everything that could enter the draw, so it is settled."""
+    def test_our_own_finished_candidate_leaves_the_draw_running(self, node_env, monkeypatch):
+        """Finishing our own evaluation must not end the window early.
+        Closing it here gave a node that finished its own block a
+        zero-length window while a node that abandoned got a full one, two
+        different rules for the same event, and the length of our own
+        window ended up set by how long we took."""
         node, *_ = node_env
 
         def _evaluate(challenge, iterations, handle=None):
@@ -1347,7 +1350,44 @@ class TestDraw:
         node._run_cycle()
 
         assert node.cs.height == 1
-        assert node._draw_height is None
+        assert node._draw_is_open(1)
+
+    def test_the_window_is_anchored_to_the_first_candidate_not_our_commit(self, node_env):
+        """Anchored to our own commit instead, a node that took 30s longer
+        would collect for 30s longer, so the slower a node is the more time
+        it gets to be beaten and the less a fast node's speed buys it."""
+        node, *_ = node_env
+        g = node.cs.tip
+        first = make_block(1, g["hash"], [], builder_index=0, vdf_output="mm")
+
+        node._consider_inbound_block(first, node.cs, [])
+        anchored_at = node._draw_closes
+        assert node._draw_height == 1
+
+        node._commit(first)
+        assert node._draw_closes == anchored_at
+
+    def test_abandons_a_block_that_cannot_make_the_window(self, node_env):
+        """A node running behind the leader would otherwise finish a block
+        that missed every draw it could have entered, and start the next
+        height late, every height, forever."""
+        node, *_ = node_env
+        node._own_build_seconds.extend([120.0] * 5)
+        node._draw_height = node.cs.height + 1
+        node._draw_closes = time.monotonic() + 15.0
+
+        # ~120s of our own work left against 15s of window
+        assert node._should_abandon(node.cs, [object()], time.monotonic()) is True
+
+    def test_keeps_going_when_it_can_still_make_the_window(self, node_env):
+        node, *_ = node_env
+        node._own_build_seconds.extend([120.0] * 5)
+        node._draw_height = node.cs.height + 1
+        node._draw_closes = time.monotonic() + 15.0
+
+        # 118s already spent, so ~2s left against 15s of window
+        assert node._should_abandon(
+            node.cs, [object()], time.monotonic() - 118.0) is False
 
 
 # ---------------------------------------------------------------------------
