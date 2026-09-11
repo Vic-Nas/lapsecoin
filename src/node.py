@@ -23,6 +23,7 @@ sole writer; every mutation publishes a new snapshot atomically.
 
 import collections
 import json
+import os
 import logging
 import queue
 import statistics
@@ -72,19 +73,29 @@ SILENCE_MULTIPLE = 3.0
 # have a median interval of its own (fresh node, first blocks).
 SILENCE_FALLBACK_SECONDS = 600.0
 
-# Background sampling poll, kept even though blocks normally tell us
-# everything. They only tell us what our own peers choose to forward: a node
-# that is eclipsed, or partitioned onto a consistent but inferior fork, sees
-# a perfectly healthy stream of blocks and never goes silent, so neither
-# trigger above ever fires. This samples a *random* peer rather than the
-# best-known one, since best-known is exactly who an eclipsing attacker
+# A background probe of one *random* peer, once per cycle.
+#
+# Blocks only tell us what our own peers choose to forward. An eclipsed
+# node, or one partitioned onto a consistent but inferior fork, sees a
+# healthy stream and never goes silent, so no block-driven trigger ever
+# fires. Random, because best-known is exactly who an eclipsing attacker
 # would arrange for us to keep asking.
 #
-# Expressed in block intervals rather than seconds so it tracks the chain's
-# own pace. Rare enough to be nearly free (one GETINFO, and the work
-# comparison ends it right there unless something is genuinely wrong),
-# frequent enough that a partition is measured in minutes, not never.
-BACKGROUND_POLL_BLOCK_INTERVALS = 20
+# Once per cycle because a probe is now one GETINFO datagram that ends on
+# the work comparison. Frequency was never what made the old polling
+# expensive -- every poll unconditionally ran an O(log chain) fork search
+# and a fetch, and that is what had to go. At a datagram a cycle the cost
+# is a rounding error against a ~120s evaluation, so there is no reason to
+# detect an eclipse in twenty block times when one will do.
+
+# How much of a fetch to do before handing the loop back. A sync of many
+# blocks used to run to completion inline, which meant minutes during which
+# the node drained nothing and forwarded nothing -- and under a stem that is
+# worse than slow for us, it is destructive for everybody: a hop handed to a
+# node in that state dies there, and the sender only finds out by rework. So
+# a pass takes a bounded bite and returns; we are still behind, the trigger
+# fires again next time round, and propagation keeps flowing meanwhile.
+SYNC_PAGES_PER_PASS = 2
 
 # GETINFO probe timeout for a sync attempt. The probe is one round trip
 # and the real one takes milliseconds; this only bounds the case where a
@@ -190,6 +201,13 @@ class Node:
         # higher chain: the address to sync from next. Evidence, not proof
         # -- see that method. Consumed and cleared by _run_cycle.
         self._sync_hint = None
+        self._sync_hint_height = 0
+
+        # Last background probe. Spaced by the chain's own pace rather than
+        # left to fire on every loop tick -- the cost of a probe is low, not
+        # zero, and once per block is already as fine-grained as the thing
+        # it is watching for.
+        self._last_probe = time.monotonic()
 
         # item_hash -> (item, kind, spread_at) for things we originated and
         # have not yet seen come back from anyone. A stem hands an item to a
@@ -218,9 +236,6 @@ class Node:
         # block having arrived. Bounds silence to one poll per threshold
         # rather than one per loop tick.
         self._last_silence_poll = 0.0
-
-        # Last background sampling poll (see BACKGROUND_POLL_BLOCK_INTERVALS).
-        self._last_background_poll = time.monotonic()
 
         # height -> (State snapshot, cumulative_iterations) for the last
         # RECENT_STATE_CACHE_SIZE heights this node has actually committed.
@@ -335,28 +350,28 @@ class Node:
     def privacy_keyfile(self):
         return self.keyfile + ".privacy"
 
-    def ensure_privacy_key(self):
-        """Create the privacy keypair if privacy is on and we don't have one.
+    def ensure_privacy_key(self, passphrase):
+        """Create the privacy keypair if it doesn't exist yet.
 
-        A real keypair, saved encrypted under the same passphrase as the
-        main key, so the address we advertise is one the operator holds and
-        can spend from. Idempotent, and a no-op when privacy is off or the
-        node isn't running (no key material resident to encrypt with).
+        Created at startup, where the passphrase is still in hand, and
+        written by the ordinary save_key with its own salt -- so it is a
+        standalone key file, openable with the passphrase alone and not
+        chained to the main one. An earlier version encrypted it under the
+        main key file's KEK purely because that was what a *running* node
+        had resident; that coupled the two files for no reason, and the
+        answer was to create it at the moment the passphrase exists rather
+        than to invent a way around not having it.
+
+        Made unconditionally, not only when privacy is on, so the switch
+        works the instant it is flipped instead of waiting for a restart to
+        have an address to advertise. One small file, written once.
         """
-        if not self.settings.get(settings_mod.PRIVATE_ADDRESS):
-            return None
-        if self.settings.get(settings_mod.ADVERTISED_ADDRESS):
-            return None   # operator named one; nothing to generate
         with self._privacy_key_lock:
             existing = self.storage.get_meta(self._PRIVACY_ADDR_META)
-            if existing:
+            if existing and os.path.exists(self.privacy_keyfile):
                 return existing
-            if self._kek is None:
-                log.warning("[privacy] no key material resident; cannot create "
-                            "a privacy key yet, advertising nothing meanwhile")
-                return None
             sk, pk = crypto.generate_keypair()
-            crypto.save_key_with_kek(self.privacy_keyfile, sk, pk, self._kek)
+            crypto.save_key(self.privacy_keyfile, sk, pk, passphrase)
             del sk
             addr = crypto.public_key_to_address(pk)
             self.storage.set_meta(self._PRIVACY_ADDR_META, addr)
@@ -412,7 +427,6 @@ class Node:
 
     def start(self, kek):
         self._kek         = kek
-        self.ensure_privacy_key()
         self.running      = True
         self._loop_thread = threading.current_thread()
         log.info("[startup] node ready  addr=%s", self.addr)
@@ -938,15 +952,14 @@ class Node:
             return SILENCE_FALLBACK_SECONDS
         return stats["median"] * SILENCE_MULTIPLE
 
-    def _background_poll_interval(self):
-        """Seconds between background samples, in units of the chain's own
-        measured pace rather than wall-clock guesswork."""
+    def _probe_spacing(self):
+        """One background probe per block interval, measured from the chain
+        rather than assumed."""
         chain = self.cs.chain
         stats = block_mod.block_time_stats(chain, len(chain) - 1)
-        median = stats["median"] if stats and stats["median"] else None
-        if median is None:
-            return SILENCE_FALLBACK_SECONDS * BACKGROUND_POLL_BLOCK_INTERVALS
-        return median * BACKGROUND_POLL_BLOCK_INTERVALS
+        if stats is None or not stats["median"]:
+            return SILENCE_FALLBACK_SECONDS
+        return stats["median"]
 
     def _sync_if_triggered(self):
         """Sync only when something says to. Returns True if a better chain
@@ -959,11 +972,13 @@ class Node:
         - Silence past _silence_threshold(), the only case no inbound block
           can ever report. Here there is nobody to ask in particular, so we
           fall back to the highest peer we know of.
-        - A rare background sample of a *random* peer. Blocks arriving
+        - Otherwise a background probe of a *random* peer. Blocks arriving
           proves the network is alive, not that we are on its best chain:
           an eclipsed or partitioned node sees a healthy stream and never
           goes silent. This is the only trigger that looks outside the set
-          currently feeding us, which is why it picks at random.
+          currently feeding us, which is why it picks at random, and it is
+          affordable every cycle because a probe that finds nothing is a
+          single datagram.
 
         Either way the peer's answer is validated before it is believed, so
         a lying hint costs one failed attempt against the liar, nothing
@@ -973,6 +988,7 @@ class Node:
         assert threading.current_thread() is self._loop_thread
         peer = self._sync_hint
         self._sync_hint = None
+        self._sync_hint_height = 0
         hinted = peer is not None
 
         if peer is None:
@@ -985,12 +1001,12 @@ class Node:
                 peer = self._best_known_peer()
                 reason = f"no block for {now - self._last_block_seen:.0f}s"
                 self._last_silence_poll = now
-            elif now - self._last_background_poll >= self._background_poll_interval():
+            elif now - self._last_probe >= self._probe_spacing():
                 # Deliberately random, not best-known: this exists to hear
                 # from outside whatever set is currently feeding us.
                 peer = self.pool.random()
-                reason = "background sample"
-                self._last_background_poll = now
+                reason = "background probe"
+                self._last_probe = now
             else:
                 return False
             if peer is None:
@@ -1003,6 +1019,7 @@ class Node:
             peer=peer,
             info_timeout=SYNC_INFO_TIMEOUT_SECONDS,
             local_work=self.cs.cumulative_iterations,
+            max_pages=SYNC_PAGES_PER_PASS,
         )
         if hinted and not adopted:
             # The hint was a block we could not validate -- we don't have
@@ -1082,7 +1099,12 @@ class Node:
         elif height > cs.height and sender:
             log.info("[sync] peer %s has height %d, we're at %d",
                      sender, height, cs.height)
-            self._sync_hint = sender
+            # Keep the strongest claim rather than the latest one: a single
+            # slot on last-writer-wins would let anyone displace a real hint
+            # just by sending a stream of weaker ones.
+            if height > self._sync_hint_height:
+                self._sync_hint = sender
+                self._sync_hint_height = height
 
     def _handle_inbound_tx(self, msg):
         """Route an inbound tx: validate, admit to the mempool, propagate.

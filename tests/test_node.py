@@ -63,12 +63,13 @@ def node_env(tmp_path):
     syncer  = MagicMock()
     # Real check_and_sync returns True only when it actually adopted a
     # better chain (syncer.py docstring); a bare MagicMock() call would
-    # otherwise return a truthy Mock by default and make _run_cycle's
-    # mid-wait poll think every tick found a better chain, cancelling the
-    # in-flight VDF for no reason. Tests that want to simulate a real
-    # mid-wait reorg override this explicitly (see TestRunCycleSyncPolling).
+    # otherwise return a truthy Mock by default and make _run_cycle think
+    # every check found a better chain, cancelling the in-flight VDF for no
+    # reason. Tests that want to simulate a real mid-wait reorg override
+    # this explicitly (see TestRunCycleSync).
     syncer.check_and_sync.return_value = False
     pool    = MagicMock()
+    pool.snapshot.return_value = []
     pool.count.return_value = 3
     net_q   = queue.Queue()
     db_path = str(tmp_path / "chain.db")
@@ -84,12 +85,6 @@ def node_env(tmp_path):
     )
     node._loop_thread = threading.current_thread()
     node._kek = kek
-    # Real default is 15s (see params.SETTLE_WINDOW_SECONDS_DEFAULT) -- a
-    # deliberate post-finish wait for straggler candidates, not a bug, but
-    # it would make every _run_cycle() test call take 15+ real wall-clock
-    # seconds. Tests that specifically exercise the settle window override
-    # this themselves.
-    node.settle_window_seconds = 0.01
     return node, keyfile, kek, gossip, syncer, pool, net_q
 
 
@@ -848,16 +843,21 @@ class TestRunCycleSync:
             return "aa" * 100, "bb" * 100, sleep_seconds
         return _evaluate
 
-    def test_quiet_network_does_not_poll_at_all(self, node_env, monkeypatch):
-        """Nothing arrived and the chain is keeping pace, so there is
-        nothing to ask anyone about. The old code paid a round trip every
-        cycle plus one every 10s regardless."""
+    def test_quiet_network_still_probes_one_random_peer(self, node_env, monkeypatch):
+        """Nothing arrived, so no peer has told us anything -- which is
+        exactly the state an eclipsed node is in too. A probe is one
+        datagram that ends on the work comparison, so it is affordable
+        every cycle; what used to make polling expensive was the fork
+        search and fetch behind it, not its frequency."""
         node, *_, syncer, pool, net_q = node_env
+        pool.random.return_value = "random.peer:1"
+        monkeypatch.setattr(node, "_probe_spacing", lambda: 0.0)
         monkeypatch.setattr(node_mod.vdf_mod, "evaluate", self._slow_fake_evaluate(0.05))
 
         node._run_cycle()
 
-        syncer.check_and_sync.assert_not_called()
+        syncer.check_and_sync.assert_called()
+        assert syncer.check_and_sync.call_args.kwargs["peer"] == "random.peer:1"
 
     def test_block_above_our_tip_triggers_a_sync_against_its_sender(
         self, node_env, monkeypatch
@@ -869,18 +869,23 @@ class TestRunCycleSync:
 
         node._run_cycle()
 
-        syncer.check_and_sync.assert_called_once()
-        assert syncer.check_and_sync.call_args.kwargs["peer"] == "9.9.9.9:1"
+        syncer.check_and_sync.assert_called()
+        assert syncer.check_and_sync.call_args_list[0].kwargs["peer"] == "9.9.9.9:1"
 
-    def test_a_block_at_or_below_our_tip_triggers_nothing(self, node_env, monkeypatch):
+    def test_a_block_at_or_below_our_tip_is_not_a_hint(self, node_env, monkeypatch):
+        """It proves nothing about being behind, so it must not steer who
+        we ask -- the background probe picks at random instead."""
         node, *_, syncer, pool, net_q = node_env
+        pool.random.return_value = "random.peer:1"
         monkeypatch.setattr(node_mod.vdf_mod, "evaluate", self._slow_fake_evaluate(0.05))
         g = node.cs.tip
         net_q.put({"type": "block", "block": g, "sender": "9.9.9.9:1"})
 
         node._run_cycle()
 
-        syncer.check_and_sync.assert_not_called()
+        assert node._sync_hint is None
+        for call_ in syncer.check_and_sync.call_args_list:
+            assert call_.kwargs["peer"] != "9.9.9.9:1"
 
     def test_silence_past_the_chains_own_pace_polls_the_highest_peer(
         self, node_env, monkeypatch
@@ -902,8 +907,8 @@ class TestRunCycleSync:
 
         node._run_cycle()
 
-        syncer.check_and_sync.assert_called_once()
-        assert syncer.check_and_sync.call_args.kwargs["peer"] == "high:1"
+        syncer.check_and_sync.assert_called()
+        assert syncer.check_and_sync.call_args_list[0].kwargs["peer"] == "high:1"
 
     def test_mid_wait_reorg_discards_stale_candidate(self, node_env, monkeypatch):
         """Evidence that arrives *after* the VDF has started. The proof we
@@ -1160,13 +1165,16 @@ class TestAdvertisedAddress:
         would burn the coins of anyone who paid it."""
         node, *_ = node_env
         monkeypatch.setenv("LAPSECOIN_PRIVATE_ADDRESS", "1")
-        addr = node.ensure_privacy_key()
+        addr = node.ensure_privacy_key("testpass")
 
         assert addr and addr != node.addr
         assert node.advertised_addr == addr
         assert os.path.exists(node.privacy_keyfile)
         # and the operator can actually open it with their own passphrase
-        recovered = crypto.decrypt_secret_key(node.privacy_keyfile, kek=node._kek)
+        # standalone: openable with the passphrase alone, not chained to
+        # the main key file
+        recovered = crypto.decrypt_secret_key(node.privacy_keyfile,
+                                              passphrase="testpass")
         assert recovered
 
     def test_advertises_nothing_until_that_key_exists(self, node_env, monkeypatch):
@@ -1179,8 +1187,8 @@ class TestAdvertisedAddress:
     def test_generated_key_is_created_once(self, node_env, monkeypatch):
         node, *_ = node_env
         monkeypatch.setenv("LAPSECOIN_PRIVATE_ADDRESS", "1")
-        first = node.ensure_privacy_key()
-        assert node.ensure_privacy_key() == first
+        first = node.ensure_privacy_key("testpass")
+        assert node.ensure_privacy_key("testpass") == first
         assert node.advertised_addr == first
 
     def test_an_explicitly_configured_address_is_used(self, node_env, monkeypatch):
@@ -1188,8 +1196,6 @@ class TestAdvertisedAddress:
         monkeypatch.setenv("LAPSECOIN_PRIVATE_ADDRESS", "1")
         monkeypatch.setenv("LAPSECOIN_ADVERTISED_ADDRESS", "chosen.addr")
         assert node.advertised_addr == "chosen.addr"
-        # nothing generated: the operator named one they already control
-        assert node.ensure_privacy_key() is None
 
     def test_env_overrides_stored_value_and_is_marked_forced(self, node_env, monkeypatch):
         import settings as settings_mod
@@ -1201,66 +1207,64 @@ class TestAdvertisedAddress:
 
 
 # ---------------------------------------------------------------------------
-# 21. Background sampling: blocks arriving is not proof we're on the best chain
+# 21. Background probe: blocks arriving is not proof we're on the best chain
 # ---------------------------------------------------------------------------
 
-class TestBackgroundPoll:
-    def test_healthy_stream_of_blocks_still_gets_sampled_eventually(
-        self, node_env, monkeypatch
-    ):
+class TestBackgroundProbe:
+    @pytest.fixture(autouse=True)
+    def _probe_now(self, node_env, monkeypatch):
+        node = node_env[0]
+        monkeypatch.setattr(node, "_probe_spacing", lambda: 0.0)
+
+    def test_healthy_stream_of_blocks_is_still_probed_around(self, node_env):
         """An eclipsed node, or one partitioned onto a consistent but
         inferior fork, sees blocks arriving normally and never goes silent,
         so neither the hint nor the silence trigger ever fires. This is the
         only trigger that looks outside whatever set is feeding us."""
         node, *_, syncer, pool, net_q = node_env
         pool.random.return_value = "random.peer:1"
-        monkeypatch.setattr(node, "_background_poll_interval", lambda: 1.0)
         node._last_block_seen = time.monotonic()      # not silent
-        node._last_background_poll = time.monotonic() - 10
+        node._last_probe = time.monotonic() - 10_000
 
-        assert node._sync_if_triggered() is not None
+        node._sync_if_triggered()
+
         syncer.check_and_sync.assert_called_once()
         assert syncer.check_and_sync.call_args.kwargs["peer"] == "random.peer:1"
 
-    def test_background_sample_picks_at_random_not_best_known(
-        self, node_env, monkeypatch
-    ):
+    def test_probe_picks_at_random_not_best_known(self, node_env):
         """Best-known is exactly who an eclipsing attacker would arrange for
         us to keep asking."""
         node, *_, syncer, pool, net_q = node_env
         pool.random.return_value = "random.peer:1"
         pool.snapshot.return_value = [("attacker:1", 0, True, 10**9, "", "", None)]
-        monkeypatch.setattr(node, "_background_poll_interval", lambda: 1.0)
         node._last_block_seen = time.monotonic()
-        node._last_background_poll = time.monotonic() - 10
+        node._last_probe = time.monotonic() - 10_000
 
         node._sync_if_triggered()
         assert syncer.check_and_sync.call_args.kwargs["peer"] == "random.peer:1"
 
-    def test_not_sampled_again_immediately(self, node_env, monkeypatch):
-        node, *_, syncer, pool, net_q = node_env
-        pool.random.return_value = "random.peer:1"
-        monkeypatch.setattr(node, "_background_poll_interval", lambda: 1.0)
-        node._last_block_seen = time.monotonic()
-        node._last_background_poll = time.monotonic() - 10
-
-        node._sync_if_triggered()
-        syncer.check_and_sync.reset_mock()
-        node._sync_if_triggered()
-        syncer.check_and_sync.assert_not_called()
-
-    def test_background_sample_does_not_strike_on_a_quiet_answer(self, node_env, monkeypatch):
+    def test_probe_does_not_strike_on_a_quiet_answer(self, node_env):
         """Only a hint we chose to act on is a bet that can be lost. A
-        random sample finding nothing is the normal, expected outcome."""
+        random probe finding nothing is the normal, expected outcome."""
         node, *_, syncer, pool, net_q = node_env
         pool.random.return_value = "random.peer:1"
         syncer.check_and_sync.return_value = False
-        monkeypatch.setattr(node, "_background_poll_interval", lambda: 1.0)
         node._last_block_seen = time.monotonic()
-        node._last_background_poll = time.monotonic() - 10
+        node._last_probe = time.monotonic() - 10_000
 
         node._sync_if_triggered()
         pool.strike.assert_not_called()
+
+    def test_a_sync_pass_is_bounded_so_the_loop_keeps_forwarding(self, node_env):
+        """A long sync that ran to completion inline blocked the loop for
+        minutes, and a node that isn't draining forwards nothing -- under a
+        stem that silently kills whatever hop was handed to it."""
+        node, *_, syncer, pool, net_q = node_env
+        pool.random.return_value = "random.peer:1"
+        node._last_probe = time.monotonic() - 10_000
+        node._sync_if_triggered()
+        assert syncer.check_and_sync.call_args.kwargs["max_pages"] == \
+            node_mod.SYNC_PAGES_PER_PASS
 
 
 # ---------------------------------------------------------------------------
@@ -1342,3 +1346,50 @@ class TestDraw:
 
         assert node.cs.height == 1
         assert node._draw_height is None
+
+
+# ---------------------------------------------------------------------------
+# 23. Hints can't be shouted down
+# ---------------------------------------------------------------------------
+
+class TestHintSelection:
+    def test_the_strongest_claim_wins_not_the_latest(self, node_env):
+        """A single last-writer-wins slot would let anyone bury a real hint
+        under a stream of weaker ones."""
+        node, *_ = node_env
+        node._handle_inbound_block(
+            {"block": make_block(900, "00" * 32, []), "sender": "real:1",
+             "stemming": False}, [])
+        node._handle_inbound_block(
+            {"block": make_block(5, "00" * 32, []), "sender": "noise:1",
+             "stemming": False}, [])
+
+        assert node._sync_hint == "real:1"
+
+    def test_a_stronger_later_claim_does_replace(self, node_env):
+        node, *_ = node_env
+        node._handle_inbound_block(
+            {"block": make_block(5, "00" * 32, []), "sender": "low:1",
+             "stemming": False}, [])
+        node._handle_inbound_block(
+            {"block": make_block(900, "00" * 32, []), "sender": "high:1",
+             "stemming": False}, [])
+
+        assert node._sync_hint == "high:1"
+
+
+class TestProbeSpacing:
+    def test_probe_does_not_fire_on_every_loop_tick(self, node_env, monkeypatch):
+        """The wait loop asks on every tick; a probe is cheap but not free,
+        and once per block is already as fine-grained as the thing it is
+        watching for."""
+        node, *_, syncer, pool, net_q = node_env
+        pool.random.return_value = "random.peer:1"
+        node._last_block_seen = time.monotonic()
+        monkeypatch.setattr(node, "_probe_spacing", lambda: 60.0)
+        node._last_probe = time.monotonic() - 10_000
+
+        assert node._sync_if_triggered() is not None
+        syncer.check_and_sync.reset_mock()
+        node._sync_if_triggered()
+        syncer.check_and_sync.assert_not_called()

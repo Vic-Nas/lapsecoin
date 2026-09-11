@@ -50,7 +50,7 @@ class Syncer:
         self.udp  = udp
 
     def check_and_sync(self, local_chain, apply_fn, peer=None, info_timeout=8.0,
-                       local_work=None):
+                       local_work=None, max_pages=None):
         """Sync from `peer` (default: a random one) if they have a better chain.
 
         Compares by cumulative proven VDF work (tip hash breaks ties).
@@ -65,6 +65,12 @@ class Syncer:
         local_work: our own cumulative proven iterations, used for the
         cheap first-round-trip bail below. Omit it and no bail happens --
         correct, just not free.
+
+        max_pages: stop after this many fetched pages and return, leaving
+        the rest for the caller's next pass. A long sync that ran inline to
+        completion blocked its caller for minutes, and a node that is not
+        draining is a node that forwards nothing -- which under a stem
+        silently kills whatever hop was handed to it.
         """
         if peer is None:
             peer = self.pool.random()
@@ -129,9 +135,11 @@ class Syncer:
         log.info("[sync] peer=%s remote=%d local=%d fork_from=%d fetching",
                  peer, remote_height, local_height, fork_from)
 
-        return self._fetch_and_apply(peer, local_chain, fork_from, remote_height, apply_fn)
+        return self._fetch_and_apply(peer, local_chain, fork_from, remote_height,
+                                     apply_fn, max_pages)
 
-    def _fetch_and_apply(self, peer, local_chain, fork_from, remote_height, apply_fn):
+    def _fetch_and_apply(self, peer, local_chain, fork_from, remote_height, apply_fn,
+                         max_pages=None):
         """Fetch in FETCH_CHUNK-block pages, applying each page as it
         arrives instead of buffering the whole tail and applying it once at
         the end.
@@ -154,8 +162,13 @@ class Syncer:
         """
         applied_any = False
         tail_so_far = []
+        pages = 0
         h = fork_from
         while h <= remote_height:
+            if max_pages is not None and pages >= max_pages:
+                log.debug("[sync] pausing after %d pages, resuming next pass", pages)
+                break
+            pages += 1
             to_h = min(h + FETCH_CHUNK - 1, remote_height)
             resp = self._request_sync_with_retry(peer, from_h=h, to_h=to_h, timeout=30)
             if resp is None:

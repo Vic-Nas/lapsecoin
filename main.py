@@ -309,6 +309,9 @@ def main():
     syncer    = Syncer(pool, udp)
     discovery = Discovery(udp, pool, genesis["hash"], port, pk_hex)
     node      = Node(args.keyfile, pk, gossip, syncer, pool, net_in_q, db_path=args.db)
+    # While the passphrase is still in hand: the privacy key is a
+    # standalone key file with its own salt, not chained to this one.
+    node.ensure_privacy_key(passphrase)
 
     def _chain_provider(from_h, to_h):
         chain = node.view.chain

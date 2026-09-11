@@ -143,34 +143,6 @@ def save_key(path, secret_key_bytes, public_key_bytes, passphrase):
     os.chmod(path, 0o600)
 
 
-def save_key_with_kek(path, secret_key_bytes, public_key_bytes, kek):
-    """Encrypt a keypair to disk using an already-derived KEK.
-
-    Same on-disk format as save_key, for callers that hold the KEK rather
-    than the passphrase (a running node keeps the former and deliberately
-    never retains the latter). The salt is stored so derive_kek() can
-    reproduce this KEK from the passphrase later, exactly as for a key
-    written by save_key -- which matters because this file has to be
-    openable by its owner with nothing but the passphrase they already use.
-    """
-    salt = nacl.utils.random(nacl.pwhash.argon2id.SALTBYTES)
-    box  = nacl.secret.SecretBox(kek)
-    data = {
-        "public_key": public_key_bytes.hex(),
-        "ciphertext": base64.b64encode(box.encrypt(secret_key_bytes)).decode(),
-        "salt":       base64.b64encode(salt).decode(),
-        "ops": _OPS, "mem": _MEM,
-        # This file's KEK is the main key file's KEK, so its own salt can't
-        # regenerate it from the passphrase. Recorded so anything reading
-        # this file knows where its KEK actually comes from rather than
-        # silently deriving the wrong one.
-        "kek_from": "primary_keyfile",
-    }
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
-    os.chmod(path, 0o600)
-
-
 def load_pubkey(path):
     """Load public key from key file (no passphrase needed)."""
     with open(path) as f:
