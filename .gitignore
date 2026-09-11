@@ -19,6 +19,9 @@ lapsecoin_chain.db
 lapsecoin_chain.db-shm
 lapsecoin_chain.db-wal
 lapsecoin_key.json
+lapsecoin.log
+lapsecoin.log.*
+lapsecoin.lock
 
 # Uptime-reward tracked-budget state
 lapsecoin_rewards.json
