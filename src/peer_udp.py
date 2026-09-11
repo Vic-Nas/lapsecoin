@@ -137,6 +137,21 @@ RATE_LIMIT_BURST    = 100
 CHUNK_ACK_TIMEOUT    = 1.5   # seconds to wait for acks before a retransmit round
 CHUNK_ACK_MAX_ROUNDS = 4
 
+# How many peers a multi-chunk message is sent to at once.
+#
+# A chunked send paces itself (see _send_chunked), so sending to peers one
+# after another made the last peer wait for every peer before it: a 50-tx
+# block is 121 chunks, so a fan-out to 8 peers spent about 4.8 seconds
+# asleep, per level of the broadcast tree. Overlapping them removes that
+# multiplier without touching the rate on any single path, so the drop
+# risk each receiver sees is exactly what it was.
+#
+# Bounded rather than unlimited because it does multiply this node's own
+# outbound burst: each concurrent send is ~280 KB/s, which is nothing on a
+# server and not nothing on a home uplink, and a drop costs a 1.5s
+# retransmit round, three hundred times the sleep it would save.
+FANOUT_CONCURRENCY = 4
+
 # Header: 1 (type) + 4 (msg_id) + 2 (chunk_idx) + 2 (chunk_total) = 9 bytes
 HDR_FMT  = "!BIHh"  # chunk_total is signed, but MT_ACK is what actually
 # distinguishes an ack datagram (see _handle_ack). It's just an ordinary
@@ -435,6 +450,12 @@ class UDPTransport:
         self._rate_buckets: dict[str, list] = {}   # source ip -> [tokens, last_refill]
         self._rate_lock   = threading.Lock()
         self._executor  = ThreadPoolExecutor(max_workers=16, thread_name_prefix="udp-cb")
+        # Separate from _executor deliberately: that one dispatches inbound
+        # datagrams, and a paced fan-out occupies a worker for as long as the
+        # pacing lasts. Sharing would let one large block's fan-out starve
+        # the reading of everything arriving while it goes out.
+        self._fanout    = ThreadPoolExecutor(max_workers=FANOUT_CONCURRENCY,
+                                             thread_name_prefix="udp-fan")
         self._on_punch_go   = None  # set by discovery after init
         self._get_tip_fn    = None  # set by main after node init
         self._on_peer_hint  = None  # set by discovery; called when PING includes "from"
@@ -501,6 +522,7 @@ class UDPTransport:
             except Exception:
                 pass
         self._executor.shutdown(wait=False)
+        self._fanout.shutdown(wait=False)
 
     # ------------------------------------------------------------------
     # Public send operations
@@ -557,9 +579,16 @@ class UDPTransport:
                            "stemming": stemming})
         msg_id = self._new_msg_id()
         self._mark_seen(msg_id)
-        for addr in peers:
-            self._send_chunked(MT_BLOCK, msg_id, payload,
-                               self._addr_tuple(addr))
+        targets = [self._addr_tuple(a) for a in peers]
+        if len(payload) <= MAX_CHUNK_SIZE or len(targets) == 1:
+            # Nothing to overlap: a single-datagram send does no pacing, so
+            # handing it to a pool would only add scheduling to it.
+            for target in targets:
+                self._send_chunked(MT_BLOCK, msg_id, payload, target)
+            return
+        for target in targets:
+            self._fanout.submit(self._send_chunked, MT_BLOCK, msg_id,
+                                payload, target)
 
     def send_tx(self, tx: dict, peers=None, stemming: bool = False):
         """Send a tx to `peers` (default: all). stemming as in send_block."""

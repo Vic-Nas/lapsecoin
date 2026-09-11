@@ -1403,6 +1403,66 @@ class TestDraw:
         assert node._should_abandon(
             node.cs, [object()], time.monotonic() - 150.0) is True
 
+    def test_window_is_the_configured_floor_until_it_has_measured(self, node_env):
+        """A node that has seen no contested height has nothing to go on,
+        and guessing from no samples is worse than the operator's number."""
+        node, *_ = node_env
+        import settings as settings_mod
+        assert node._draw_window_seconds() == node.settings.get(
+            settings_mod.DRAW_WINDOW_SECONDS)
+
+    def test_measurement_can_only_lengthen_the_window(self, node_env):
+        """A measurement can say the network is slower than the operator
+        assumed. It must never say it is safe to be stricter than they
+        chose, which would silently drop competitors they wanted included."""
+        node, *_ = node_env
+        import settings as settings_mod
+        floor = node.settings.get(settings_mod.DRAW_WINDOW_SECONDS)
+        node._draw_gaps.extend([0.05] * 10)      # a very fast network
+
+        assert node._draw_window_seconds() == floor
+
+    def test_a_slow_network_widens_the_window(self, node_env):
+        node, *_ = node_env
+        import settings as settings_mod
+        floor = node.settings.get(settings_mod.DRAW_WINDOW_SECONDS)
+        node._draw_gaps.extend([6.0] * 10)       # median 6s of arrival spread
+
+        widened = node._draw_window_seconds()
+        assert widened > floor
+        assert widened == 6.0 * node_mod.DRAW_WINDOW_TAIL_FACTOR
+
+    def test_the_widening_is_capped(self, node_env):
+        """Inflating the median costs a real VDF per height, but it must
+        still be bounded however many an attacker is willing to spend."""
+        node, *_ = node_env
+        import settings as settings_mod
+        floor = node.settings.get(settings_mod.DRAW_WINDOW_SECONDS)
+        node._draw_gaps.extend([10_000.0] * 10)
+
+        assert node._draw_window_seconds() == floor * node_mod.DRAW_WINDOW_MAX_MULTIPLE
+
+    def test_the_first_candidate_of_a_height_records_no_gap(self, node_env):
+        """It is the anchor: there is nothing for it to be late against."""
+        node, *_ = node_env
+        g = node.cs.tip
+        first = make_block(1, g["hash"], [], builder_index=0, vdf_output="mm")
+
+        node._consider_inbound_block(first, node.cs, [])
+        assert list(node._draw_gaps) == []
+
+    def test_a_later_sibling_records_how_late_it_was(self, node_env):
+        node, *_ = node_env
+        g = node.cs.tip
+        first  = make_block(1, g["hash"], [], builder_index=0, vdf_output="mm")
+        second = make_block(1, g["hash"], [], builder_index=1, vdf_output="nn")
+
+        node._consider_inbound_block(first, node.cs, [])
+        node._consider_inbound_block(second, node.cs, [])
+
+        assert len(node._draw_gaps) == 1
+        assert node._draw_gaps[0] > 0
+
     def test_a_new_contest_at_a_height_we_held_before_gets_a_window(self, node_env):
         """Nothing resets _draw_height when a window expires, so a height
         number we already used must not be able to suppress the window for

@@ -120,6 +120,32 @@ SYNC_INFO_TIMEOUT_SECONDS = 2.0
 ECHO_BOOTSTRAP_SECONDS = 10.0
 ECHO_MIN_SECONDS       = 2.0
 
+# The draw window has to cover how late an honest competitor's block
+# actually shows up, and that is not a constant: it is dominated by block
+# size, not by network size. An empty block reaches a thousand nodes in
+# about half a second, a fifty-transaction one takes eleven, because a
+# transaction is ~3.3KB of signature and key and the transport paces
+# itself chunk by chunk. A window fixed in seconds is therefore generous
+# on a quiet chain and simply too short on a busy one, and too short is
+# the bad direction: it drops honest competitors from the draw and nothing
+# reports that it happened.
+#
+# So the configured setting is a floor rather than the whole answer, and
+# measurement can raise it. What gets measured is the thing the window has
+# to cover, directly: the gap between a height's first candidate arriving
+# and each later one. Median, not p95, because inflating the sample costs
+# an attacker a real VDF per height, and a median shrugs off a minority of
+# inflated samples where a tail statistic would follow them.
+DRAW_GAP_SAMPLES        = 50
+DRAW_GAP_MIN_SAMPLES    = 5
+# Median to tail: the window must cover the late half of the distribution,
+# not just its middle.
+DRAW_WINDOW_TAIL_FACTOR = 3.0
+# Ceiling relative to the configured floor, so a measured window stays
+# recognisably the operator's number and the inflation attack is bounded
+# however far the median is pushed.
+DRAW_WINDOW_MAX_MULTIPLE = 3.0
+
 # How often to log that the VDF is still running. Without this, the default
 # INFO log goes quiet for the entire ~2-3 minute wait between "[vdf] starting"
 # and "[vdf] proof ready", which reads as hung rather than working.
@@ -208,6 +234,11 @@ class Node:
         # a moment to resolve. See _reorg_to_sibling.
         self._draw_height = None
         self._draw_closes = 0.0
+        # When the open draw was anchored, and how late later candidates
+        # for a height have actually been arriving. See
+        # _draw_window_seconds.
+        self._draw_anchor = 0.0
+        self._draw_gaps   = collections.deque(maxlen=DRAW_GAP_SAMPLES)
         self.running      = False
         self._kek         = None
         self._loop_thread = None
@@ -731,6 +762,10 @@ class Node:
         network can actually produce rather than by what anyone can send.
         """
         if self._validate_candidate(blk, cs):
+            # Order matters: the gap is measured against the anchor, so it
+            # has to be read before open_draw would set one. The first
+            # candidate for a height is the anchor and records nothing.
+            self._note_draw_gap(blk["height"])
             # First valid candidate for this height starts its draw, even
             # though we have not adopted anything yet. That is the anchor
             # every node shares; see open_draw.
@@ -806,11 +841,43 @@ class Node:
         sitting there with a deadline long past, and that genuinely new
         contest would get no window at all.
         """
-        if self._draw_height == height and time.monotonic() < self._draw_closes:
+        now = time.monotonic()
+        if self._draw_height == height and now < self._draw_closes:
             return
         self._draw_height = height
-        self._draw_closes = time.monotonic() + self.settings.get(
-            settings_mod.DRAW_WINDOW_SECONDS)
+        self._draw_anchor = now
+        self._draw_closes = now + self._draw_window_seconds()
+
+    def _draw_window_seconds(self):
+        """How long the window should run, the configured floor or what
+        this node has measured it needs, whichever is longer.
+
+        The floor is what the operator asked for and is never undercut: a
+        measurement can only ever say the network is slower than they
+        assumed, never that it is safe to be stricter than they chose.
+        Capped at DRAW_WINDOW_MAX_MULTIPLE of that floor, both to bound
+        what a stream of deliberately-late valid blocks could do to it and
+        to keep the number recognisably theirs.
+        """
+        floor = self.settings.get(settings_mod.DRAW_WINDOW_SECONDS)
+        if len(self._draw_gaps) < DRAW_GAP_MIN_SAMPLES:
+            return floor
+        measured = statistics.median(self._draw_gaps) * DRAW_WINDOW_TAIL_FACTOR
+        return max(floor, min(measured, floor * DRAW_WINDOW_MAX_MULTIPLE))
+
+    def _note_draw_gap(self, height):
+        """Record how late this candidate is against the height's first one.
+
+        Called only for candidates that have already validated, so the
+        sample set costs a real VDF per entry rather than a datagram. A
+        no-op for the first candidate of a height, which is the anchor
+        itself and has no gap to measure.
+        """
+        if self._draw_height != height or not self._draw_anchor:
+            return
+        gap = time.monotonic() - self._draw_anchor
+        if gap > 0:
+            self._draw_gaps.append(gap)
 
     def _draw_is_open(self, height):
         return (self._draw_height == height
@@ -852,6 +919,10 @@ class Node:
             return False
         ok, _err = self.apply_better_chain(cs.chain[:-1] + [blk])
         if ok:
+            # Only once it has proven itself a real, better block for this
+            # height, so the sample stays as expensive to produce as a
+            # block is. See _note_draw_gap.
+            self._note_draw_gap(blk["height"])
             log.info("[draw] height=%d won by %s (lower vdf_output)",
                      blk["height"], blk["hash"][:12])
         return ok

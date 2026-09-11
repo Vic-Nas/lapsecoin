@@ -99,9 +99,10 @@ ADVERTISED_ADDRESS = Setting(
 # draw, and disagree more often as a result.
 DRAW_WINDOW_SECONDS = Setting(
     "draw_window_seconds", 10.0, float, minimum=0.0,
-    label="Draw window (seconds)",
-    help="How long a height keeps accepting a better same-height block "
-         "after one is adopted. Not a wait, work on the next height "
+    label="Minimum draw window (seconds)",
+    help="Shortest time a height keeps accepting a better same-height "
+         "block. Widened automatically when blocks are measured to be "
+         "arriving slower than this. Not a wait, work on the next height "
          "continues throughout.",
 )
 
