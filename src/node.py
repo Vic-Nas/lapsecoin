@@ -1082,6 +1082,11 @@ class Node:
             info_timeout=SYNC_INFO_TIMEOUT_SECONDS,
             local_work=self.cs.cumulative_iterations,
             max_pages=SYNC_PAGES_PER_PASS,
+            # Don't stay blocked longer than the network's own patience
+            # with us: past our measured echo deadline, anyone who stemmed
+            # an item to us has already given up and re-sent it, so time
+            # spent beyond that is time spent being a hole in propagation.
+            budget=self._echo_deadline_seconds(),
         )
         if hinted and not adopted:
             # The hint was a block we could not validate -- we don't have

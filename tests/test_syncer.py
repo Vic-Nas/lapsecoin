@@ -10,6 +10,7 @@ UDP calls are mocked via udp.request_sync -- no network.
 
 import os
 import sys
+import time
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -235,3 +236,35 @@ class TestFindForkPoint:
         assert fp == 1
 
 
+
+
+class TestPassBudget:
+    """max_pages bounds the work we choose to do; the budget bounds the work
+    a peer can make us wait for. Every request can time out and retry, so an
+    unresponsive peer could otherwise hold the node loop for minutes a pass,
+    and claiming a high tip costs an attacker nothing. A blocked loop drains
+    nothing and forwards nothing, which under a stem kills whatever hop was
+    handed to it."""
+
+    def test_a_stalling_peer_cannot_hold_the_pass_open(self):
+        syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
+        udp.get_info.return_value = {"height": 10_000, "tip_hash": "", "work": 10**9}
+
+        def slow_request(*a, **kw):
+            time.sleep(0.05)
+            return None            # never answers usefully
+
+        udp.request_sync.side_effect = slow_request
+        started = time.monotonic()
+        syncer.check_and_sync(chain_of(200), apply_fn=MagicMock(return_value=False),
+                              local_work=1, budget=0.2)
+        assert time.monotonic() - started < 2.0
+
+    def test_no_budget_behaves_as_before(self):
+        syncer, pool, udp = make_syncer(peers=["1.2.3.4:9000"])
+        udp.get_info.return_value = {"height": 9, "tip_hash": "", "work": 999}
+        udp.request_sync.return_value = wrap_chain(chain_of(3)[1:])
+        apply_fn = MagicMock(return_value=False)
+        with patch.object(syncer, "_find_fork_point", return_value=0):
+            syncer.check_and_sync(chain_of(5), apply_fn=apply_fn, local_work=1)
+        apply_fn.assert_called_once()

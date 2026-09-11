@@ -8,6 +8,7 @@ See ChainState.is_better_than().
 """
 
 import logging
+import time
 
 log = logging.getLogger("ec.syncer")
 
@@ -43,6 +44,10 @@ SYNC_REQUEST_RETRIES = 2
 FORK_SEARCH_WINDOW = 20
 
 
+def _expired(deadline):
+    return deadline is not None and time.monotonic() >= deadline
+
+
 class Syncer:
 
     def __init__(self, pool, udp):
@@ -50,7 +55,7 @@ class Syncer:
         self.udp  = udp
 
     def check_and_sync(self, local_chain, apply_fn, peer=None, info_timeout=8.0,
-                       local_work=None, max_pages=None):
+                       local_work=None, max_pages=None, budget=None):
         """Sync from `peer` (default: a random one) if they have a better chain.
 
         Compares by cumulative proven VDF work (tip hash breaks ties).
@@ -69,8 +74,15 @@ class Syncer:
         max_pages: stop after this many fetched pages and return, leaving
         the rest for the caller's next pass. A long sync that ran inline to
         completion blocked its caller for minutes, and a node that is not
-        draining is a node that forwards nothing -- which under a stem
+        draining is a node that forwards nothing, which under a stem
         silently kills whatever hop was handed to it.
+
+        budget: seconds this whole pass may take. max_pages bounds the work
+        we choose to do; this bounds the work a peer can make us wait for.
+        Every request here can time out and retry, so an unresponsive peer
+        could otherwise hold the caller for several minutes per pass, and
+        claiming a high tip costs an attacker nothing. Whatever is left
+        undone is picked up next pass, from whoever answers.
         """
         if peer is None:
             peer = self.pool.random()
@@ -127,7 +139,8 @@ class Syncer:
         log.debug("[sync] comparing  peer=%s  remote=%d  local=%d",
                   peer, remote_height, local_height)
 
-        fork_from = self._find_fork_point(peer, local_chain)
+        deadline = None if budget is None else time.monotonic() + budget
+        fork_from = self._find_fork_point(peer, local_chain, deadline)
         if fork_from is None:
             log.warning("[sync] fork point search failed  peer=%s", peer)
             return False
@@ -136,10 +149,10 @@ class Syncer:
                  peer, remote_height, local_height, fork_from)
 
         return self._fetch_and_apply(peer, local_chain, fork_from, remote_height,
-                                     apply_fn, max_pages)
+                                     apply_fn, max_pages, deadline)
 
     def _fetch_and_apply(self, peer, local_chain, fork_from, remote_height, apply_fn,
-                         max_pages=None):
+                         max_pages=None, deadline=None):
         """Fetch in FETCH_CHUNK-block pages, applying each page as it
         arrives instead of buffering the whole tail and applying it once at
         the end.
@@ -165,6 +178,9 @@ class Syncer:
         pages = 0
         h = fork_from
         while h <= remote_height:
+            if _expired(deadline):
+                log.debug("[sync] out of budget after %d pages  peer=%s", pages, peer)
+                break
             if max_pages is not None and pages >= max_pages:
                 log.debug("[sync] pausing after %d pages, resuming next pass", pages)
                 break
@@ -200,7 +216,7 @@ class Syncer:
                 return resp
         return None
 
-    def _find_fork_point(self, peer, local_chain):
+    def _find_fork_point(self, peer, local_chain, deadline=None):
         """Binary search for the common ancestor, returning the first height
         that differs (so the caller fetches from there).
 
@@ -214,20 +230,27 @@ class Syncer:
         """
         window_lo = max(0, len(local_chain) - 1 - FORK_SEARCH_WINDOW)
         if window_lo > 0:
-            match = self._highest_common(peer, local_chain, window_lo)
+            match = self._highest_common(peer, local_chain, window_lo, deadline)
             if match is not None:
                 return match + 1
+            if _expired(deadline):
+                return None
             log.debug("[sync] fork older than recent window, widening  peer=%s", peer)
-        match = self._highest_common(peer, local_chain, 0)
+        match = self._highest_common(peer, local_chain, 0, deadline)
+        if match is None and _expired(deadline):
+            return None
         return (match + 1) if match is not None else 0
 
-    def _highest_common(self, peer, local_chain, lo):
+    def _highest_common(self, peer, local_chain, lo, deadline=None):
         """Highest height in [lo, tip] where our block and the peer's match,
         or None if even `lo` differs (or the peer never answered)."""
         hi = len(local_chain) - 1
         result = None
 
         while lo <= hi:
+            if _expired(deadline):
+                log.debug("[sync] fork search out of budget  peer=%s", peer)
+                return result
             mid = (lo + hi) // 2
             local_hash = local_chain[mid]["hash"]
 
