@@ -730,3 +730,84 @@ class TestRaceChartColorStability:
             {"window": rows, "median": 120.0, "own_seconds": None, "odds_pct": None})
 
         assert [e["label"] for e in chart["legend"]] == ["bob", "carol", "alice"]
+
+
+class TestRaceChartHeightAxis:
+    """The height axis, and the one property that makes it safe to hand to
+    the page as a set of draggable handles.
+
+    Dragging redistributes the width the window is drawn across. The page
+    recomputes each point's x from the handle positions, so the map it uses
+    has to agree with _race_chart's own linear placement while the handles
+    are untouched; if it doesn't, simply loading the page would nudge every
+    point off where the server drew it, and the no-JS render and the live
+    one would disagree.
+    """
+
+    def _race(self, n):
+        return {"window": [(9000 + i, 120.0 + (i % 7), "a%d" % (i % 5))
+                           for i in range(n)],
+                "median": 122.0, "own_seconds": 121.0, "odds_pct": 50.0}
+
+    def _x_from_ticks(self, chart, idx):
+        """The page's piecewise map, at rest. Mirrors xOf() in odds.html."""
+        ticks = chart["x_ticks"]
+        i = len(ticks) - 2
+        for k in range(len(ticks) - 1):
+            if idx <= ticks[k + 1]["idx"]:
+                i = k
+                break
+        span = ticks[i + 1]["idx"] - ticks[i]["idx"]
+        t = (idx - ticks[i]["idx"]) / span if span else 0.0
+        frac = ticks[i]["frac"] + t * (ticks[i + 1]["frac"] - ticks[i]["frac"])
+        return chart["pad_l"] + frac * chart["plot_w"]
+
+    @pytest.mark.parametrize("n", [2, 5, 14, 15, 16, 100, 719, 720])
+    def test_at_rest_the_piecewise_map_is_the_linear_one(self, n):
+        import api as api_mod
+        chart = api_mod._race_chart(self._race(n))
+        for p in chart["points"]:
+            assert abs(self._x_from_ticks(chart, p["idx"]) - p["x"]) < 0.2
+
+    @pytest.mark.parametrize("n", [2, 5, 14, 15, 16, 100, 719, 720])
+    def test_ticks_pin_the_ends_and_strictly_ascend(self, n):
+        """Handles are clamped between their neighbours, so a repeated or
+        out-of-order index would produce one that cannot move, and a
+        zero-width segment to divide by."""
+        import api as api_mod
+        ticks = api_mod._race_chart(self._race(n))["x_ticks"]
+        idxs = [t["idx"] for t in ticks]
+
+        assert idxs[0] == 0 and idxs[-1] == n - 1
+        assert idxs == sorted(set(idxs))
+        assert ticks[0]["frac"] == 0.0
+        assert ticks[-1]["frac"] == pytest.approx(1.0)
+
+    @pytest.mark.parametrize("n", [15, 16, 100, 719, 720])
+    def test_rest_gaps_clear_the_pages_minimum(self, n):
+        """MIN_GAP in odds.html stops a segment being squeezed to nothing.
+        A rest gap below it would put a handle outside its own clamp before
+        anyone had dragged anything."""
+        import api as api_mod
+        ticks = api_mod._race_chart(self._race(n))["x_ticks"]
+        gaps = [ticks[i + 1]["frac"] - ticks[i]["frac"]
+                for i in range(len(ticks) - 1)]
+
+        assert min(gaps) > 0.02
+
+    def test_short_window_gets_labels_but_no_handles(self):
+        """Below the threshold the interior ticks cannot land on distinct
+        blocks, so the axis degrades to its two pinned ends. The page reads
+        that as nothing to drag rather than special-casing a count."""
+        import api as api_mod
+        ticks = api_mod._race_chart(self._race(8))["x_ticks"]
+
+        assert len(ticks) == 2
+
+    def test_labels_name_real_blocks_in_the_window(self):
+        import api as api_mod
+        race = self._race(720)
+        heights = [h for h, _, _ in race["window"]]
+        ticks = api_mod._race_chart(race)["x_ticks"]
+
+        assert [t["height"] for t in ticks] == [heights[t["idx"]] for t in ticks]

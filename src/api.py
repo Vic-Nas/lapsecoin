@@ -325,11 +325,21 @@ def fee_estimate(node):
 # rest of the site's self-contained, offline-friendly UI)
 # ---------------------------------------------------------------------------
 
-_CHART_W, _CHART_H = 860, 220
-_CHART_PAD_L, _CHART_PAD_T, _CHART_PAD_B = 46, 10, 22
+_CHART_W, _CHART_H = 860, 232
+# Bottom padding carries the height axis: a row of grips, then their labels.
+_CHART_PAD_L, _CHART_PAD_T, _CHART_PAD_B = 46, 10, 34
 
 
 _TICK_COUNT = 5  # labeled horizontal gridlines, evenly spaced across the axis
+
+# Labeled block heights along the bottom. Five is chosen to match the y
+# axis, and because every one of them but the two pinned ends is a lever
+# the reader can drag: four segments is enough to isolate a region without
+# turning the axis into a row of controls to aim at.
+_X_TICK_COUNT = 5
+# Below this a window is too short for the interior ticks to land on
+# distinct blocks, so it gets end labels only and nothing to drag.
+_X_TICK_MIN_BLOCKS = 3 * _X_TICK_COUNT
 
 # Builder identity colors, capped at 3: any two points on this chart can end
 # up adjacent regardless of building order (it's effectively a scatter over
@@ -340,6 +350,36 @@ _TICK_COUNT = 5  # labeled horizontal gridlines, evenly spaced across the axis
 # other builder folds into "other" instead of a generated 4th-plus color.
 _BUILDER_COLOR_SLOTS = ["var(--series-1)", "var(--series-2)", "var(--series-3)"]
 _OTHER_COLOR = "var(--series-other)"
+
+
+def _x_ticks(rows):
+    """Labeled positions along the height axis, oldest first.
+
+    `idx` is the position in the window, `height` the block it names, and
+    `frac` where it sits across the plot as a fraction of the width. At
+    rest the fracs are evenly spaced, which makes the axis plain linear
+    and identical to what it has always drawn.
+
+    They are fractions rather than pixels because the page stores whatever
+    arrangement the reader drags them into, and the window slides as blocks
+    arrive: a saved height is a different block ten minutes later, while a
+    saved "this tick sits 73% across" is still the same arrangement. The
+    labels re-derive from whichever heights are in the window now.
+    """
+    n = len(rows)
+    if n < _X_TICK_MIN_BLOCKS:
+        idxs = sorted({0, n - 1})
+    else:
+        idxs = sorted({round(i * (n - 1) / (_X_TICK_COUNT - 1))
+                       for i in range(_X_TICK_COUNT)})
+    # The rest frac comes from the block index, not from the tick number.
+    # Interior indices are rounded to land on real blocks, so spacing them
+    # evenly by tick number instead would leave the axis subtly non-linear
+    # before anyone has touched it, and every point between two ticks
+    # drawn a few pixels off where the server itself put it.
+    span = max(n - 1, 1)
+    return [{"idx": idx, "height": rows[idx][0], "frac": round(idx / span, 6)}
+            for idx in idxs]
 
 
 def _race_chart(race):
@@ -403,7 +443,7 @@ def _race_chart(race):
                         for i, b in enumerate(sorted(top_builders))}
 
     points = [{"x": round(x_at(idx), 1), "y": round(y_at(seconds), 1),
-               "height": h, "seconds": seconds,
+               "idx": idx, "height": h, "seconds": seconds,
                "clipped": seconds > axis_hi or seconds < axis_lo,
                "builder": builder, "color": color_by_builder.get(builder, _OTHER_COLOR)}
               for idx, (h, seconds, builder) in enumerate(rows)]
@@ -440,9 +480,17 @@ def _race_chart(race):
             suffix = "-"
         ticks.append({"value": value, "y": round(y_at(value), 1), "suffix": suffix})
 
+    # plot_w/pad_l go out with the rest because the page recomputes each
+    # point's x when the reader drags the height axis around. Everything
+    # else, y included, is unaffected by that: dragging redistributes the
+    # width the same points are drawn across, it never changes which
+    # points are on screen, so the vertical scale and its clipping stay
+    # exactly as computed here.
     return {"points": points, "own_y": own_y, "own_clipped": own_clipped,
             "median_y": round(y_at(median), 1), "ticks": ticks,
+            "x_ticks": _x_ticks(rows),
             "width": _CHART_W, "height": _CHART_H,
+            "pad_l": _CHART_PAD_L, "plot_w": plot_w,
             "plot_top": _CHART_PAD_T, "plot_bottom": _CHART_PAD_T + plot_h,
             "axis_lo": axis_lo, "axis_hi": axis_hi, "legend": legend}
 
