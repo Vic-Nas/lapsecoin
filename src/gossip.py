@@ -48,7 +48,7 @@ to traffic.
 """
 
 import logging
-import random
+import secrets
 import threading
 from cachetools import LRUCache
 
@@ -73,6 +73,19 @@ SEEN_CACHE_SIZE = 50_000
 # originator a known distance back.
 STEM_CONTINUE_PROB = 0.9
 
+def _random_fraction():
+    """A uniform [0,1) from the system CSPRNG.
+
+    Deliberately not random.random(): the stem's stop decision and its
+    choice of next hop are what an observer would have to guess to place an
+    item's origin, and Mersenne Twister is reconstructible from enough
+    observed output. Both are cheap here -- one draw per hop, per item --
+    so there is no reason to use a predictable generator for the one thing
+    the stem is keeping secret.
+    """
+    return secrets.randbits(53) / (1 << 53)
+
+
 KIND_BLOCK = "block"
 KIND_TX    = "tx"
 
@@ -95,8 +108,14 @@ class Gossip:
     def spread(self, item, kind, item_hash):
         """Start propagating an item this node originated (a block we just
         built, or a tx we just signed). Enters the stem; see the module
-        docstring for the rule."""
-        self._forward(item, kind, item_hash, predecessor=None)
+        docstring for the rule.
+
+        Returns the peer it was handed to, or None if it went straight
+        public. The caller needs to know, because that peer is the one node
+        whose word about this item is worth nothing: it is the only one that
+        can swallow the item and still echo it back (see Node._note_echo).
+        """
+        return self._forward(item, kind, item_hash, predecessor=None)
 
     def relay(self, item, kind, item_hash, sender, stemming):
         """Continue propagating an item that reached us from `sender`.
@@ -134,22 +153,24 @@ class Gossip:
     # ------------------------------------------------------------------
 
     def _forward(self, item, kind, item_hash, predecessor):
-        """One stem hop, or a fluff if the rule says to stop here."""
-        if random.random() < STEM_CONTINUE_PROB:
+        """One stem hop, or a fluff if the rule says to stop here. Returns
+        the peer stemmed to, or None if it fluffed."""
+        if _random_fraction() < STEM_CONTINUE_PROB:
             peer = self._stem_peer(predecessor)
             if peer is not None:
                 log.debug("[gossip] stem %s to %s", kind, peer)
                 self._send(item, kind, peers=[peer], stemming=True)
-                return
+                return peer
             # No peer other than whoever handed it to us. Continuing would
             # mean handing it straight back, so this is where the walk ends.
         self._fluff(item, kind, item_hash, exclude=predecessor)
+        return None
 
     def _stem_peer(self, predecessor):
         """One random peer that isn't the predecessor, or None if the only
         peers we have are the predecessor (or none at all)."""
         peers = [p for p in self.pool.get_all() if p != predecessor]
-        return random.choice(peers) if peers else None
+        return secrets.choice(peers) if peers else None
 
     def _fluff(self, item, kind, item_hash, exclude=None):
         """Public phase: flood to every peer except whoever sent it to us,

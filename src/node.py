@@ -203,6 +203,15 @@ class Node:
         self._sync_hint = None
         self._sync_hint_height = 0
 
+        # Hashes already judged against the current tip, so a block replayed
+        # under a fresh transport msg_id doesn't buy a repeat of the VDF
+        # verification behind block_mod.validate. Cleared whenever the tip
+        # moves, since that is exactly when a previous verdict stops
+        # applying. Bounded, and only ever an optimisation: a miss costs a
+        # re-check, never a wrong answer.
+        self._judged_at_tip = {}
+        self._judged_tip = None
+
         # Last background probe. Spaced by the chain's own pace rather than
         # left to fire on every loop tick -- the cost of a probe is low, not
         # zero, and once per block is already as fine-grained as the thing
@@ -471,7 +480,14 @@ class Node:
     def submit_tx_from_api(self, tx_dict, timeout=5):
         """Thread-safe bridge: enqueue tx, block until the loop replies."""
         reply = queue.Queue(maxsize=1)
-        self.net_in_q.put({"type": "submit_tx", "tx": tx_dict, "reply": reply})
+        try:
+            # Bounded put: net_in_q has a cap now (see main.py), so an
+            # unbounded put could hang this request thread outright instead
+            # of failing it.
+            self.net_in_q.put({"type": "submit_tx", "tx": tx_dict, "reply": reply},
+                              timeout=timeout)
+        except queue.Full:
+            return False, "node busy (inbound queue full)"
         try:
             return reply.get(timeout=timeout)
         except queue.Empty:
@@ -679,9 +695,18 @@ class Node:
         self._close_draw()
 
     def _consider_inbound_block(self, blk, cs, accumulated_blocks):
-        """Record an inbound block for this cycle's winner pick."""
-        accumulated_blocks.append(blk)
-        self._validate_candidate(blk, cs)
+        """Record an inbound block as a candidate for this cycle's draw,
+        but only once it has actually validated.
+
+        Nothing unvalidated may go in this list. _should_abandon reads it to
+        decide whether the height is contested, and a contested height can
+        cancel an evaluation already most of the way through -- so an
+        unchecked entry here means one crafted datagram throws away ~120s of
+        somebody's real work. It also keeps the list bounded by what the
+        network can actually produce rather than by what anyone can send.
+        """
+        if self._validate_candidate(blk, cs):
+            accumulated_blocks.append(blk)
 
     def _should_abandon(self, cs, accumulated_blocks, vdf_start):
         """Whether to stop computing this height because we can no longer
@@ -758,11 +783,31 @@ class Node:
             return False
         if blk.get("hash") == cs.tip["hash"]:
             return False
+        # Settle the draw with a string compare before doing anything
+        # expensive. A sibling whose output isn't lower cannot win, so
+        # there is nothing to replay or verify -- and without this, anyone
+        # could make us re-derive chain state (and verify a VDF proof) once
+        # per datagram just by sending same-height blocks.
+        if block_mod.tie_break_key(blk) >= block_mod.tie_break_key(cs.tip):
+            return False
         ok, _err = self.apply_better_chain(cs.chain[:-1] + [blk])
         if ok:
             log.info("[draw] height=%d won by %s (lower vdf_output)",
                      blk["height"], blk["hash"][:12])
         return ok
+
+    def _judged(self, blk, cs):
+        """Cached verdict for this block against this tip, or None."""
+        if self._judged_tip != cs.tip["hash"]:
+            self._judged_at_tip = {}
+            self._judged_tip = cs.tip["hash"]
+        return self._judged_at_tip.get(blk.get("hash"))
+
+    def _remember_judgement(self, blk, cs, verdict):
+        h = blk.get("hash")
+        if h and len(self._judged_at_tip) < 10_000:
+            self._judged_at_tip[h] = verdict
+        return verdict
 
     def _validate_candidate(self, blk, cs):
         """True if blk is a fully validated candidate for cs.height+1
@@ -783,11 +828,13 @@ class Node:
             return False
         if blk.get("previous_hash") != cs.tip["hash"]:
             return False
+        cached = self._judged(blk, cs)
+        if cached is not None:
+            return cached
         ok, err = block_mod.validate(blk, cs.state.snapshot(), cs.chain)
         if not ok:
             log.debug("[vdf] rejected inbound candidate: %s", err)
-            return False
-        return True
+        return self._remember_judgement(blk, cs, ok)
 
     def _pick_winner(self, cs, candidate, peer_blocks):
         """Return (best_block, relay). relay=True means it came from a peer.
@@ -896,17 +943,32 @@ class Node:
             self._handle_inbound_tx(msg)
 
     def _spread(self, item, kind, item_hash):
-        """Originate an item and remember it until we see it come back."""
-        self._unconfirmed_spreads[item_hash] = (item, kind, time.monotonic())
-        self.gossip.spread(item, kind, item_hash)
+        """Originate an item and remember it until we see it come back from
+        somebody other than whoever we handed it to."""
+        stem_target = self.gossip.spread(item, kind, item_hash)
+        self._unconfirmed_spreads[item_hash] = (
+            item, kind, time.monotonic(), stem_target)
 
-    def _note_echo(self, item_hash):
-        """An item we originated came back from a peer, which is proof it
-        actually got out. Also the only measurement of how long that takes
-        that this node can make for itself."""
-        entry = self._unconfirmed_spreads.pop(item_hash, None)
+    def _note_echo(self, item_hash, sender=None):
+        """An item we originated came back from someone else, which is
+        evidence it actually got out. Also the only measurement of how long
+        that takes that this node can make for itself.
+
+        An echo from the peer we stemmed to is not evidence of anything.
+        That peer already has the item by construction, so it can drop it on
+        the floor and hand it straight back, and we would call the walk a
+        success and never re-send -- one datagram from the single node we
+        chose to trust, and the block is gone. Requiring the echo to come
+        from anyone else means swallowing an item quietly now takes a second
+        peer of ours in on it.
+        """
+        entry = self._unconfirmed_spreads.get(item_hash)
         if entry is None:
             return
+        if sender is not None and sender == entry[3]:
+            log.debug("[gossip] ignoring echo from the peer we stemmed to")
+            return
+        del self._unconfirmed_spreads[item_hash]
         self._echo_seconds.append(time.monotonic() - entry[2])
 
     def _echo_deadline_seconds(self):
@@ -934,7 +996,7 @@ class Node:
         deadline = self._echo_deadline_seconds()
         now = time.monotonic()
         for h in list(self._unconfirmed_spreads):
-            item, kind, spread_at = self._unconfirmed_spreads[h]
+            item, kind, spread_at, _stem_target = self._unconfirmed_spreads[h]
             if now - spread_at < deadline:
                 continue
             log.info("[gossip] %s %s never came back after %.1fs, flooding",
@@ -1080,16 +1142,17 @@ class Node:
         if not isinstance(height, int):
             return
 
-        self._last_block_seen = time.monotonic()
-        blk_hash = blk.get("hash")
-        if blk_hash:
-            self._note_echo(blk_hash)
-
         if height == cs.height + 1 and blk.get("previous_hash") == cs.tip["hash"]:
             ok, err = block_mod.validate(blk, cs.state.snapshot(), cs.chain)
             if not ok:
                 log.debug("[block] inbound rejected: %s", err)
                 return
+            # Only now: a block that hasn't validated proves nothing about
+            # the network still producing blocks, and treating it as proof
+            # would let one datagram hold the silence trigger open forever
+            # -- which is exactly what an eclipsing peer would want.
+            self._last_block_seen = time.monotonic()
+            self._note_echo(blk["hash"], sender)
             self.gossip.relay(blk, gossip_mod.KIND_BLOCK, blk["hash"],
                               sender, stemming=stemming)
         elif height == cs.height:
@@ -1121,12 +1184,12 @@ class Node:
         stemming = msg.get("stemming", False)
 
         tx_hash = tx_mod.tx_hash(tx_dict)
-        self._note_echo(tx_hash)
 
         ok, err = self._validate_for_mempool(tx_dict)
         if not ok:
             log.debug("[tx] inbound rejected  reason=%s  from=%s", err, origin)
             return
+        self._note_echo(tx_hash, sender)
 
         if stemming:
             log.debug("[tx] stem relay  from=%s", origin)

@@ -247,18 +247,39 @@ def main():
     pk_hex   = pk.hex()
 
     pool     = PeerPool(args.host, args.port, max_peers=args.max_peers)
-    net_in_q = queue.Queue()
+    # Bounded so a flood can't grow memory without limit while the node
+    # loop is busy. Sized from what can actually arrive between drains: the
+    # loop drains about once a second, and peer_udp rate-limits each source
+    # to RATE_LIMIT_PER_SEC, so a fully hostile peer table at MAX_PEERS can
+    # offer roughly 50 * 125 = 6250 messages a second. This holds over a
+    # second of that, which is well past any honest burst (a network-wide
+    # block is one message per peer, a couple of minutes apart).
+    net_in_q = queue.Queue(maxsize=10_000)
 
     # ------------------------------------------------------------------
     # UDP transport: single socket for all peer communication
     # ------------------------------------------------------------------
+    def _offer(msg, kind):
+        """Hand a peer message to the node loop, dropping it if the queue is
+        already full rather than blocking.
+
+        Blocking here would stall a UDP worker thread, which is how a flood
+        turns into a transport-wide outage instead of some lost messages.
+        Dropping is safe for everything that comes in this way: a block or
+        tx we miss is re-offered by ordinary propagation, and the sender's
+        own rework re-sends it if the loss mattered."""
+        try:
+            net_in_q.put_nowait(msg)
+        except queue.Full:
+            log.debug("[net] inbound queue full, dropping %s", kind)
+
     def on_block(block, sender_addr, stemming=False):
-        net_in_q.put({"type": "block", "block": block,
-                      "sender": sender_addr, "stemming": stemming})
+        _offer({"type": "block", "block": block,
+                "sender": sender_addr, "stemming": stemming}, "block")
 
     def on_tx(tx, sender_addr, stemming=False):
-        net_in_q.put({"type": "tx", "tx": tx,
-                      "sender": sender_addr, "stemming": stemming})
+        _offer({"type": "tx", "tx": tx,
+                "sender": sender_addr, "stemming": stemming}, "tx")
 
     def on_peers(peer_list, sender_addr):
         for p in peer_list:

@@ -85,11 +85,11 @@ class TestMarkSeen:
 # ---------------------------------------------------------------------------
 
 def always_stem(monkeypatch):
-    monkeypatch.setattr(gossip_mod.random, "random", lambda: 0.0)
+    monkeypatch.setattr(gossip_mod, "_random_fraction", lambda: 0.0)
 
 
 def always_fluff(monkeypatch):
-    monkeypatch.setattr(gossip_mod.random, "random", lambda: 1.0)
+    monkeypatch.setattr(gossip_mod, "_random_fraction", lambda: 1.0)
 
 
 class TestStemRule:

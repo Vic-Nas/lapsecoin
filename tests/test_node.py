@@ -1010,8 +1010,9 @@ class TestRework:
 
         node._spread(blk, "block", blk["hash"])
         # Pretend the deadline has passed rather than waiting it out.
-        item, kind, _ = node._unconfirmed_spreads[blk["hash"]]
-        node._unconfirmed_spreads[blk["hash"]] = (item, kind, time.monotonic() - 3600)
+        item, kind, _, target = node._unconfirmed_spreads[blk["hash"]]
+        node._unconfirmed_spreads[blk["hash"]] = (
+            item, kind, time.monotonic() - 3600, target)
 
         node._retry_unconfirmed_spreads()
 
@@ -1027,8 +1028,9 @@ class TestRework:
         node, _, __, gossip, *_ = node_env
         blk = make_block(1, node.cs.tip["hash"], [])
         node._spread(blk, "block", blk["hash"])
-        item, kind, _ = node._unconfirmed_spreads[blk["hash"]]
-        node._unconfirmed_spreads[blk["hash"]] = (item, kind, time.monotonic() - 3600)
+        item, kind, _, target = node._unconfirmed_spreads[blk["hash"]]
+        node._unconfirmed_spreads[blk["hash"]] = (
+            item, kind, time.monotonic() - 3600, target)
 
         node._retry_unconfirmed_spreads()
 
@@ -1393,3 +1395,81 @@ class TestProbeSpacing:
         syncer.check_and_sync.reset_mock()
         node._sync_if_triggered()
         syncer.check_and_sync.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 24. Unvalidated input must not be able to spend our resources
+# ---------------------------------------------------------------------------
+
+class TestUnvalidatedInputIsInert:
+    def test_garbage_at_our_height_plus_one_does_not_contest_the_height(self, node_env):
+        """_should_abandon reads the candidate list to decide whether a
+        height is contested, and a contested height can cancel an evaluation
+        that is most of the way done. If unvalidated blocks reached that
+        list, one crafted datagram would throw away ~120s of real work."""
+        node, *_ = node_env
+        node._own_build_seconds.extend([999.0] * 5)
+        g = node.cs.tip
+        junk = make_block(1, g["hash"], [])
+        junk["vdf_iterations"] = 1          # fails validation
+
+        accumulated = []
+        node._consider_inbound_block(junk, node.cs, accumulated)
+
+        assert accumulated == []
+        assert node._should_abandon(node.cs, accumulated, time.monotonic()) is False
+
+    def test_garbage_does_not_hold_the_silence_trigger_open(self, node_env):
+        """Otherwise an eclipsing peer keeps us quiet for the price of one
+        datagram: we never notice silence, because junk keeps arriving."""
+        node, *_ = node_env
+        node._last_block_seen = 0.0
+        junk = make_block(1, node.cs.tip["hash"], [])
+        junk["vdf_iterations"] = 1
+
+        node._handle_inbound_block(
+            {"block": junk, "sender": "1.2.3.4:1", "stemming": False}, [])
+
+        assert node._last_block_seen == 0.0
+
+    def test_a_worse_sibling_costs_no_chain_work(self, node_env, monkeypatch):
+        """A sibling that can't win the draw is settled by a string compare.
+        Without that, anyone could make us re-derive chain state and verify
+        a VDF proof once per datagram."""
+        node, *_ = node_env
+        g = node.cs.tip
+        mine  = make_block(1, g["hash"], [], builder_index=0, vdf_output="aa")
+        worse = make_block(1, g["hash"], [], builder_index=1, vdf_output="zz")
+        node._commit(mine)
+
+        called = []
+        monkeypatch.setattr(node, "apply_better_chain",
+                            lambda chain: called.append(chain) or (False, None))
+        node._reorg_to_sibling(worse, node.cs)
+
+        assert called == []
+
+
+class TestEchoCannotBeFaked:
+    def test_the_peer_we_stemmed_to_cannot_confirm_delivery(self, node_env):
+        """That peer already has the item by construction, so it can drop it
+        and hand it straight back. Counting that as delivery means one
+        datagram from the single node we chose silently loses the block."""
+        node, _, __, gossip, *_ = node_env
+        gossip.spread.return_value = "stem.target:1"
+        blk = make_block(1, node.cs.tip["hash"], [])
+
+        node._spread(blk, "block", blk["hash"])
+        node._note_echo(blk["hash"], sender="stem.target:1")
+
+        assert blk["hash"] in node._unconfirmed_spreads   # still unconfirmed
+
+    def test_an_echo_from_anyone_else_does_confirm(self, node_env):
+        node, _, __, gossip, *_ = node_env
+        gossip.spread.return_value = "stem.target:1"
+        blk = make_block(1, node.cs.tip["hash"], [])
+
+        node._spread(blk, "block", blk["hash"])
+        node._note_echo(blk["hash"], sender="someone.else:1")
+
+        assert blk["hash"] not in node._unconfirmed_spreads
