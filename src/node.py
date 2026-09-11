@@ -871,9 +871,9 @@ class Node:
         ~120s. A block that hasn't cleared real
         block_mod.validate() must never be allowed to influence that.
 
-        Deliberately does not relay: peer_udp's MT_BLOCK dispatch already
-        floods every inbound block one hop further on first sight of its
-        msg_id, so propagation is handled below this layer.
+        Deliberately does not relay: _handle_inbound_block is the single
+        place that decides propagation, and it has already made that call
+        by the time a block reaches this list.
         """
         if blk.get("height") != cs.height + 1:
             return False
@@ -1186,7 +1186,13 @@ class Node:
           one sync attempt against that peer, which then fails validation on
           its own merits, so believing the hint is never what decides truth.
 
-        - At or below our tip. Nothing to learn, nothing to pass on.
+        - A sibling of our tip. Fully validatable too, its parent is the
+          block below our own tip, so it is news rather than old news: it
+          may be the one that wins the height's draw. Taken if it does,
+          and passed on in that case only.
+
+        - Anything else at or below our tip. Nothing to learn, nothing to
+          pass on.
         """
         blk      = msg["block"]
         sender   = msg.get("sender")
