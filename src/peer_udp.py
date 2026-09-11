@@ -142,6 +142,14 @@ PORT_BIND_RETRIES = 5   # how many ascending ports to try if the requested one i
 MAX_SYNC_BLOCKS   = 500
 MAX_CHUNK_TOTAL   = 2000   # ~2.8MB reassembled, well above any real message
 
+# Ceilings on decompressing an inbound payload, see _inflate. The earlier
+# single ceiling reused MAX_CHUNK_TOTAL * MAX_CHUNK_SIZE, which is a limit
+# on wire bytes and the wrong shape for a limit on decompressed ones: it
+# left a sync page that the transport could perfectly well deliver being
+# refused for inflating past a number that describes something else.
+MAX_INFLATE_RATIO = 200                 # vs ~1.8x for a block, ~12x for a page
+MAX_INFLATE_BYTES = 8 * 1024 * 1024
+
 # Per-source-IP token bucket: caps how many datagrams/sec one address can
 # push into the worker pool, so a flood (PING or otherwise) from one sender
 # can't starve processing of legitimate traffic from everyone else.
@@ -383,7 +391,15 @@ def _inflate(payload: bytes):
     block can never cost us more memory than the plain one it stands in
     for, so this adds no new way to exhaust a node.
     """
-    limit = MAX_CHUNK_TOTAL * MAX_CHUNK_SIZE
+    # Two bounds, because one number cannot do this job. The ratio stops a
+    # small payload from expanding without limit, which is the actual bomb:
+    # an attacker has to spend proportionally to what we allocate. The
+    # absolute cap stops a large one, since MAX_CHUNK_TOTAL already lets
+    # 2.8MB on the wire and a ratio alone would license hundreds of MB from
+    # it. Real traffic is nowhere near either: a block expands about 1.8x
+    # and the best case measured, a page of near-identical empty blocks,
+    # about 12x.
+    limit = min(len(payload) * MAX_INFLATE_RATIO, MAX_INFLATE_BYTES)
     try:
         obj = zlib.decompressobj()
         out = obj.decompress(payload, limit)
@@ -690,13 +706,20 @@ class UDPTransport:
             peers = self._pool.get_all()
         if not peers:
             return
-        payload = _encode({"genesis": self.genesis_hash, "tx": tx,
-                           "stemming": stemming})
+        # Chunked, not a single datagram. A transaction carries a FALCON
+        # signature and key, so it is ~3.4KB and was going out as one
+        # oversized datagram that IP-fragments into three, every one of
+        # which has to survive or the transaction is lost. Fragmented UDP
+        # is exactly what NAT and middleboxes drop, so this was quietly
+        # costing transaction propagation. Compressed for the same reason
+        # blocks are, which also takes it to two chunks rather than three.
+        payload = zlib.compress(
+            _encode({"genesis": self.genesis_hash, "tx": tx,
+                     "stemming": stemming}), BLOCK_COMPRESS_LEVEL)
         msg_id = self._new_msg_id()
         self._mark_seen(msg_id)
         for addr in peers:
-            self._send_one(MT_TX, msg_id, None, self._addr_tuple(addr),
-                           raw_payload=payload)
+            self._send_chunked(MT_TX, msg_id, payload, self._addr_tuple(addr))
 
     def send_peers(self, addr: str, peers: list[str]):
         """Send peer list to addr."""
@@ -916,7 +939,7 @@ class UDPTransport:
         if complete is None:
             return
 
-        if msg_type == MT_BLOCK:
+        if msg_type in (MT_BLOCK, MT_TX):
             complete = _inflate(complete)
             if complete is None:
                 return

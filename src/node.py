@@ -371,7 +371,7 @@ class Node:
         else:
             cs = ChainState.from_chain(stored)
 
-        log.info("[startup] chain loaded  height=%d  tip=%s",
+        log.info("[startup] loaded our chain up to block %d, tip %s",
                  cs.height, cs.tip["hash"][:12])
         return cs
 
@@ -444,7 +444,8 @@ class Node:
             del sk
             addr = crypto.public_key_to_address(pk)
             self.storage.set_meta(self._PRIVACY_ADDR_META, addr)
-            log.info("[privacy] created privacy key %s -> %s",
+            log.info("[privacy] created a separate address to advertise, "
+                 "saved in %s -> %s",
                      self.privacy_keyfile, addr[:24])
             return addr
 
@@ -498,7 +499,7 @@ class Node:
         self._kek         = kek
         self.running      = True
         self._loop_thread = threading.current_thread()
-        log.info("[startup] node ready  addr=%s", self.addr)
+        log.info("[startup] node ready, our address is %s", self.addr)
         try:
             while self.running:
                 try:
@@ -533,7 +534,7 @@ class Node:
                       tx_dict.get("from", "?")[:24])
             return False, h
         self._spread(tx_dict, gossip_mod.KIND_TX, h)
-        log.info("[tx] accepted  hash=%s  from=%s", h[:12],
+        log.info("[tx] accepted %s from %s", h[:12],
                  tx_dict.get("from", "?")[:24])
         return True, h
 
@@ -606,9 +607,11 @@ class Node:
         cs = self.cs   # local alias; can change under sync
         pruned = self.mempool.prune_stale(cs.state)
         peers = self.pool.count()
-        log.info("[vdf] starting height=%d  tip=%s  peers=%d  mempool=%d  pruned=%d",
+        log.info("[block %d] building on %s  (%d peer%s, %d transaction%s waiting%s)",
                  cs.height + 1, cs.tip["hash"][:12],
-                 peers, self.mempool.size(), len(pruned))
+                 peers, "" if peers == 1 else "s",
+                 self.mempool.size(), "" if self.mempool.size() == 1 else "s",
+                 f", {len(pruned)} dropped as stale" if pruned else "")
         if peers == 0:
             # Distinct from peers=0 in the line above, which reads as one
             # number among several. A node with no peers is building a
@@ -668,7 +671,7 @@ class Node:
                 now = time.monotonic()
                 if now - last_heartbeat >= VDF_HEARTBEAT_INTERVAL_SECONDS:
                     elapsed = now - vdf_start
-                    log.info("[vdf] still computing  height=%d  elapsed=%.0fs",
+                    log.info("[block %d] still building, %.0fs so far",
                              cs.height + 1, elapsed)
                     self.status_line = (f"computing VDF for block {cs.height + 1} "
                                         f"({elapsed:.0f}s elapsed)")
@@ -710,10 +713,11 @@ class Node:
                     pass
 
         if own_cancelled:
-            log.info("[vdf] own candidate abandoned for height=%d", cs.height + 1)
+            log.info("[block %d] gave up on our own: it can no longer arrive "
+                     "while the draw is open", cs.height + 1)
         else:
-            log.info("[vdf] proof ready  height=%d  seconds=%.1f  iterations=%d",
-                     cs.height + 1, vdf_seconds, iterations)
+            log.info("[block %d] our proof is ready, took %.0fs",
+                     cs.height + 1, vdf_seconds)
             self._own_build_seconds.append(vdf_seconds)
             self._save_own_build_seconds()
 
@@ -724,8 +728,9 @@ class Node:
             # without re-checking it, so committing this candidate would
             # silently splice a block onto the wrong parent. Discard it; the
             # next cycle starts fresh against the new tip.
-            log.info("[vdf] tip changed during VDF computation (adopted a "
-                     "better chain mid-cycle); discarding in-flight candidate")
+            log.info("[block %d] dropped: a better chain arrived while we "
+                     "were building, so this was built on the wrong parent",
+                     cs.height + 1)
             return
 
         if own_cancelled:
@@ -932,7 +937,8 @@ class Node:
             # height, so the sample stays as expensive to produce as a
             # block is. See _note_draw_gap.
             self._note_draw_gap(blk["height"])
-            log.info("[draw] height=%d won by %s (lower vdf_output)",
+            log.info("[block %d] changed hands to %s, which proved a better "
+                     "result for the same height",
                      blk["height"], blk["hash"][:12])
         return ok
 
@@ -1017,8 +1023,8 @@ class Node:
 
         entrants = ([candidate] if candidate is not None else []) + valid_peers
         if not entrants:
-            log.info("[vdf] no viable candidate this cycle (own abandoned, "
-                     "no valid peer blocks either)")
+            log.info("[block %d] nobody produced a usable one this round, "
+                     "starting over", tip["height"] + 1)
             return None, False
 
         # Among all equally-valid same-height candidates (all proving the
@@ -1027,8 +1033,10 @@ class Node:
         # pick can't diverge from what syncer would settle on anyway.
         winner   = min(entrants, key=block_mod.tie_break_key)
         is_peer  = winner is not candidate
-        log.info("[vdf] winner  hash=%s  peer=%s  candidates=%d  peer_candidates=%d",
-                 winner["hash"][:12], is_peer, len(entrants), len(valid_peers))
+        log.info("[block %d] %s wins with %s, out of %d in the running",
+                 tip["height"] + 1,
+                 "a peer's block" if is_peer else "our block",
+                 winner["hash"][:12], len(entrants))
         return winner, is_peer
 
     def _commit(self, blk, relay=False):
@@ -1056,9 +1064,10 @@ class Node:
         # actually watches for, and reading it off `builder` meant
         # recognising your own address in a truncated string.
         won = blk.get("builder") == self.addr
-        log.info("[commit] height=%d  %s  hash=%s  tx=%d  builder=%s",
-                 blk["height"], "WON by us" if won else "built by a peer",
+        log.info("[block %d] %s  %s, %d transaction%s, built by %s",
+                 blk["height"], "WE WON IT" if won else "accepted",
                  blk["hash"][:12], len(blk["transactions"]),
+                 "" if len(blk["transactions"]) == 1 else "s",
                  (blk.get("builder") or "")[:24])
         self.status_line = f"block {blk['height']} {'won' if won else 'received'}"
 
@@ -1149,8 +1158,8 @@ class Node:
             item, kind, spread_at, _stem_target = self._unconfirmed_spreads[h]
             if now - spread_at < deadline:
                 continue
-            log.info("[gossip] %s %s never came back after %.1fs, flooding",
-                     kind, h[:12], now - spread_at)
+            log.info("[gossip] our %s %s was not echoed back after %.0fs, "
+                     "sending it to everyone", kind, h[:12], now - spread_at)
             del self._unconfirmed_spreads[h]
             self.gossip.force_fluff(item, kind, h)
 
@@ -1353,7 +1362,7 @@ class Node:
                 self.gossip.relay(blk, gossip_mod.KIND_BLOCK, blk["hash"],
                                   sender, stemming=stemming)
         elif height > cs.height and sender:
-            log.info("[sync] peer %s has height %d, we're at %d",
+            log.info("[sync] %s is on block %d and we are on %d, catching up",
                      sender, height, cs.height)
             # Keep the strongest claim rather than the latest one: a single
             # slot on last-writer-wins would let anyone displace a real hint
@@ -1578,9 +1587,10 @@ class Node:
                           "committed, mempool may hold stale entries until pruned")
 
         if fork_point < self.cs.height:
-            log.warning("[reorg] height=%d  fork_point=%d", self.cs.height, fork_point)
+            log.warning("[sync] replaced our last %d block(s): now on block %d",
+                        self.cs.height - fork_point + 1, self.cs.height)
         else:
-            log.info("[sync] height=%d  fork_point=%d", self.cs.height, fork_point)
+            log.info("[sync] now on block %d", self.cs.height)
         return True, None
 
     def _reorg_mempool(self, fork_point, old_chain, new_chain, new_state):

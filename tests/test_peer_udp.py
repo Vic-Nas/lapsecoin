@@ -484,10 +484,21 @@ def test_a_payload_that_is_not_compressed_at_all_is_refused():
     assert peer_udp._inflate(b"not zlib, just bytes") is None
 
 
-def test_something_within_the_ceiling_inflates_fine():
+def test_real_traffic_is_nowhere_near_the_ratio_bound():
+    """The bound is on expansion, so what matters is that real payloads sit
+    well under it. Measured: a block expands about 1.7x and the most
+    compressible thing the protocol sends, a page of near-identical empty
+    blocks, about 11.5x, against a limit of 200."""
     import zlib
-    raw = b"x" * 10_000
-    assert peer_udp._inflate(zlib.compress(raw)) == raw
+    from tests.fixtures import make_block
+
+    page = peer_udp._encode(
+        {"genesis": "x" * 64,
+         "chain": [make_block(h, f"{h:064x}", []) for h in range(50)]})
+    compressed = zlib.compress(page, peer_udp.BLOCK_COMPRESS_LEVEL)
+
+    assert len(page) / len(compressed) < peer_udp.MAX_INFLATE_RATIO / 4
+    assert peer_udp._inflate(compressed) == page
 
 
 def test_an_old_peer_answering_our_ping_never_completes_the_handshake():

@@ -108,14 +108,14 @@ class Discovery:
         if not (isinstance(addr, str) and ":" in addr):
             return
         if self._ping_and_admit(addr):
-            log.info("[peer] bootstrap peer admitted  addr=%s", addr)
+            log.info("[peers] connected to the peer given on the command line, %s", addr)
             return
         # Try hole punch via any existing peer
         for relay in self.pool.get_all()[:3]:
             if self._punch_and_admit(relay, addr):
-                log.info("[peer] bootstrap peer admitted via punch  addr=%s", addr)
+                log.info("[peers] connected to %s (needed a hole punch through NAT)", addr)
                 return
-        log.warning("[peer] bootstrap peer unreachable  addr=%s", addr)
+        log.warning("[peers] could not reach %s, the peer given on the command line", addr)
 
     # ------------------------------------------------------------------
     # Main loop
@@ -151,7 +151,7 @@ class Discovery:
             ip = self._fallback_ip()
             if ip:
                 self.udp.our_external_addr = f"{ip}:{self.port}"
-                log.info("[peer] external addr seeded from HTTP  addr=%s:%d", ip, self.port)
+                log.info("[peers] our address as others see it: %s:%d", ip, self.port)
 
         # Wait for the DHT routing table to settle before issuing the first
         # query, so it isn't sent into an empty table, but don't just
@@ -225,7 +225,7 @@ class Discovery:
             if now - last_status >= STATUS_LOG_INTERVAL:
                 with self._lock:
                     queued = len(self._candidates)
-                log.info("[discovery] peers=%d  candidates_queued=%d",
+                log.info("[peers] %d connected, %d address(es) left to try",
                          self.pool.count(), queued)
                 last_status = now
 
@@ -255,7 +255,8 @@ class Discovery:
         # "flushing" read as "discarding" to at least one operator, who
         # concluded their peers were being rejected. It is the opposite:
         # these are about to be tried.
-        log.info("[peer] trying %d candidate(s)  addrs=%s", len(fresh), fresh)
+        log.info("[peers] trying %d new address(es): %s",
+                 len(fresh), ", ".join(fresh))
 
         admitted = 0
         for addr in fresh:
@@ -287,9 +288,10 @@ class Discovery:
                     log.debug("[peer] unreachable (no punch)  addr=%s", addr)
 
         if admitted:
-            log.info("[peer] admitted %d peers  pool=%d", admitted, self.pool.count())
+            log.info("[peers] connected to %d of them, %d peer(s) in total",
+                     admitted, self.pool.count())
         else:
-            log.info("[peer] tried %d candidate(s), none reachable", len(fresh))
+            log.info("[peers] none of those %d could be reached", len(fresh))
 
     def _ping_and_admit(self, addr: str) -> bool:
         """UDP PING addr. If PONG arrives, exchange peers and admit. Returns True on success."""
@@ -298,7 +300,8 @@ class Discovery:
             return False
         # PONG received; node is reachable
         if self.pool.add(addr):
-            log.info("[peer] connected  addr=%s  pool=%d", addr, self.pool.count())
+            log.info("[peers] connected to %s, %d peer(s) in total",
+                 addr, self.pool.count())
             # Exchange peer lists
             self.udp.send_peers(addr, self.pool.get_all()[:50])
         return True
@@ -342,7 +345,7 @@ class Discovery:
         try:
             with open(PEER_CACHE_FILE) as f:
                 peers = json.load(f)
-            log.info("[peer] cache loaded  count=%d", len(peers))
+            log.info("[peers] remembered %d address(es) from last run", len(peers))
             for addr in peers:
                 self.enqueue_candidate(addr)
         except FileNotFoundError:

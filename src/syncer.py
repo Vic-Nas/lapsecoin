@@ -152,8 +152,8 @@ class Syncer:
             log.warning("[sync] fork point search failed  peer=%s", peer)
             return False
 
-        log.info("[sync] peer=%s remote=%d local=%d fork_from=%d fetching",
-                 peer, remote_height, local_height, fork_from)
+        log.info("[sync] fetching blocks %d to %d from %s",
+                 fork_from, remote_height, peer)
 
         return self._fetch_and_apply(peer, local_chain, fork_from, remote_height,
                                      apply_fn, max_pages, deadline, progress)
