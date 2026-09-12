@@ -34,12 +34,8 @@
   <form method="POST" enctype="multipart/form-data">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="form-group">
-      <label>CSV outputs (one per line: address,amount). Prefilled with known peers at 0; only the lines you change to a nonzero amount get sent, the rest are ignored.</label>
-      <textarea name="outputs" rows="4" placeholder="word1.word2...word12,1000&#10;word1.word2...word12,500">{{ outputs_value }}</textarea>
-    </div>
-    <div class="form-row">
-      <label for="csv_file">Or upload CSV file</label>
-      <input type="file" id="csv_file" name="csv_file" accept=".csv,.txt">
+      <label>CSV outputs (address,amount). Only lines changed to a nonzero amount get sent.</label>
+      <textarea name="outputs" rows="2" placeholder="word1.word2...word12,1000&#10;word1.word2...word12,500">{{ outputs_value }}</textarea>
     </div>
     <div class="form-group" style="display:flex;gap:.75rem;flex-wrap:wrap">
       <div style="flex:1 1 120px">
@@ -54,6 +50,10 @@
       </div>
     </div>
     <div class="form-group" style="display:flex;gap:.75rem;align-items:flex-end;flex-wrap:wrap">
+      <div style="flex:0 0 auto">
+        <label for="csv_file">Or upload CSV</label>
+        <input type="file" id="csv_file" name="csv_file" accept=".csv,.txt">
+      </div>
       <div style="flex:1 1 220px">
         <label for="passphrase">Your signing passphrase</label>
         <input type="password" id="passphrase" name="passphrase" placeholder="Passphrase" style="width:100%">
