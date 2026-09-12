@@ -32,6 +32,20 @@ for _root in _search_roots:
         break
 
 # Search multiple locations for MSVC runtime DLLs (no-op on Linux).
+#
+# SysWOW64 is a deliberate last resort, not an equal alternative: on a
+# 64-bit Windows box that folder holds the 32-bit copies kept for legacy
+# 32-bit apps (System32 has the 64-bit ones despite the name), so a
+# 64-bit build must stop searching the moment an earlier root has the
+# file, never fall through to it. This used to keep searching every root
+# for every pattern regardless, so on a runner where the same filename
+# existed in both System32 and SysWOW64, both copies got queued for the
+# same destination name and PyInstaller's table of contents kept
+# whichever won that collision, not necessarily the 64-bit one. That
+# shipped a real Windows build that failed for exactly this reason: a
+# 32-bit vcruntime140.dll loaded into a 64-bit process reads as chiavdf's
+# DLL failing to load, "%1 is not a valid Win32 application", rather than
+# naming the actual mismatched file.
 _msvc_dlls = []
 if sys.platform == "win32":
     _msvc_search = [
@@ -42,10 +56,11 @@ if sys.platform == "win32":
     for _pat in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll",
                  "concrt140.dll"):
         for _root in _msvc_search:
-            for _p in glob.glob(os.path.join(_root, _pat)):
-                if os.path.isfile(_p) and (_p, ".") not in _msvc_dlls:
-                    _msvc_dlls.append((_p, "."))
-                    break
+            _matches = [p for p in glob.glob(os.path.join(_root, _pat)) if os.path.isfile(p)]
+            if _matches:
+                if (_matches[0], ".") not in _msvc_dlls:
+                    _msvc_dlls.append((_matches[0], "."))
+                break  # stop at the first root that has it; do not also check the rest
 
     # chiavdf installs as a single top-level .pyd (not a package directory),
     # so collect_all/collect_dynamic_libs silently skips its native DLLs.
