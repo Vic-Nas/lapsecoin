@@ -41,23 +41,25 @@
       <label for="csv_file">Or upload CSV file</label>
       <input type="file" id="csv_file" name="csv_file" accept=".csv,.txt">
     </div>
-    <div class="form-row">
-      <label for="fee">Fee, in ticks</label>
-      <input type="number" id="fee" name="fee" value="0" min="0">
-      <span class="stat-sub">See the current fee market above; higher fee per byte gets picked up sooner.</span>
+    <div class="form-group" style="display:flex;gap:.75rem;flex-wrap:wrap">
+      <div style="flex:1 1 120px">
+        <label for="fee" title="See the fee market above; higher fee per byte gets picked up sooner.">Fee, in ticks</label>
+        <input type="number" id="fee" name="fee" value="0" min="0" style="width:100%">
+      </div>
+      <div style="flex:3 1 240px">
+        <label for="memo-input" title="Plaintext, permanent, visible to everyone; not encrypted.">Memo, optional</label>
+        <input type="text" name="memo" id="memo-input" value="{{ memo_value }}"
+               placeholder="What this payment is for" style="width:100%">
+        <div class="stat-sub" id="memo-counter" style="margin-top:.15rem"></div>
+      </div>
     </div>
-    <div class="form-row">
-      <label for="memo-input">Memo, optional</label>
-      <input type="text" name="memo" id="memo-input" value="{{ memo_value }}"
-             placeholder="What this payment is for">
-      <span class="stat-sub">Plaintext, permanent, visible to everyone; not encrypted.
-        <span id="memo-counter"></span></span>
+    <div class="form-group" style="display:flex;gap:.75rem;align-items:flex-end;flex-wrap:wrap">
+      <div style="flex:1 1 220px">
+        <label for="passphrase">Your signing passphrase</label>
+        <input type="password" id="passphrase" name="passphrase" placeholder="Passphrase" style="width:100%">
+      </div>
+      <button type="submit" style="flex:0 0 auto">Sign &amp; Send</button>
     </div>
-    <div class="form-row">
-      <label for="passphrase">Your signing passphrase</label>
-      <input type="password" id="passphrase" name="passphrase" placeholder="Passphrase">
-    </div>
-    <button type="submit">Sign &amp; Send</button>
   </form>
 </div>
 <script>
