@@ -150,6 +150,42 @@ def test_ping_from_public_source_does_not_bypass_pool_validation():
     pool.add.assert_not_called()
 
 
+def test_ping_from_public_source_hints_the_real_observed_address():
+    """A public PING's self-reported "from" can be stale or simply wrong for
+    us specifically (a NAT handing out a different external port per
+    destination, or the sender's own address cache not confirmed yet), so
+    it must not be the only candidate this ever offers. The literal
+    address the packet arrived from is always hinted too: it's the one
+    fact about this packet that cannot be wrong."""
+    pool = MagicMock()
+    udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
+                       on_tx=MagicMock(), on_peers=MagicMock(), pool=pool)
+    udp._send_one = MagicMock()
+    hint = MagicMock()
+    udp._on_peer_hint = hint
+    udp._dispatch(MT_PING, 30, {"genesis": udp.genesis_hash,
+                            "proto": peer_udp.PROTOCOL_VERSION,
+                            "from": "203.0.113.9:9001"},  # wrong/stale on purpose
+                  ("8.8.8.8", 8333))
+    hint.assert_any_call("8.8.8.8:8333")
+
+
+def test_ping_without_a_from_field_still_hints_the_observed_address():
+    """Even with no self-reported address at all (an old peer, or one that
+    hasn't confirmed its own external address yet), the sender is still a
+    real, reachable address worth trying."""
+    pool = MagicMock()
+    udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),
+                       on_tx=MagicMock(), on_peers=MagicMock(), pool=pool)
+    udp._send_one = MagicMock()
+    hint = MagicMock()
+    udp._on_peer_hint = hint
+    udp._dispatch(MT_PING, 31, {"genesis": udp.genesis_hash,
+                            "proto": peer_udp.PROTOCOL_VERSION},
+                  ("8.8.8.8", 8333))
+    hint.assert_called_once_with("8.8.8.8:8333")
+
+
 def test_ping_from_loopback_does_not_self_admit():
     pool = MagicMock()
     udp = UDPTransport(port=9999, genesis_hash="a" * 64, on_block=MagicMock(),

@@ -562,7 +562,7 @@ class UDPTransport:
         self._fanout_slots = threading.BoundedSemaphore(FANOUT_PENDING_MAX)
         self._on_punch_go   = None  # set by discovery after init
         self._get_tip_fn    = None  # set by main after node init
-        self._on_peer_hint  = None  # set by discovery; called when PING includes "from"
+        self._on_peer_hint  = None  # set by discovery; called with candidate addrs from a PING
         self._local_ips: set[str] = set()  # populated in start(); guards against self-admit
         self._disc_sock    = None  # LAN discovery broadcast/listen socket (LAN_DISCOVERY_PORT)
 
@@ -984,6 +984,22 @@ class UDPTransport:
                 announced = data.get("from", "")
                 if announced and self._on_peer_hint:
                     self._on_peer_hint(announced)
+                # Also hint the address this packet actually arrived from,
+                # not just what the sender claims about itself. `announced`
+                # is the sender's own our_external_addr, cached from
+                # whichever PONG last confirmed it and reused for every
+                # peer after that; under a NAT that hands out a different
+                # external port per destination (or right after startup,
+                # before that cache is confirmed at all), announced can be
+                # stale or simply wrong for us specifically, while
+                # sender_addr is the one thing about this packet that
+                # cannot be: it's where it actually came from. Without
+                # this, a peer whose self-report doesn't happen to match
+                # what we'd need to reach them back on can ping us, get a
+                # PONG, keep gossiping to us forever, and never once
+                # become a candidate we ourselves try to reach.
+                if self._on_peer_hint:
+                    self._on_peer_hint(sender_addr)
                 # A private-range source could only have reached us over the
                 # local network (never routed off the public internet), so
                 # it's admissible on sight. This is what makes broadcast
