@@ -1427,7 +1427,15 @@ class TestDraw:
 
         assert node._draw_window_seconds() == 4.0
         node.open_draw(1)
-        assert node._draw_closes - node._draw_anchor == 4.0
+        # Not exact equality: _draw_closes is now + 4.0 and _draw_anchor is
+        # that same now, both taken from time.monotonic(), and (x + 4.0) - x
+        # is only guaranteed exactly 4.0 for some values of x, not all --
+        # whether it round-trips exactly depends on x's own bit pattern,
+        # which here is however long this machine has been up. Passed
+        # every local run and failed on a CI runner with a different
+        # uptime for exactly that reason; the code is right, the exact
+        # comparison wasn't.
+        assert node._draw_closes - node._draw_anchor == pytest.approx(4.0)
 
     def test_a_slower_field_does_not_stretch_it(self, node_env):
         """The case that motivated removing the widening: competitors
