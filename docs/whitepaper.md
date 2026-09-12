@@ -36,7 +36,7 @@ Nothing limits how many addresses an operator runs, and each needs its own real 
 
 The base unit is the tick. One LAPSE equals 100,000,000 ticks.
 
-A transaction is a plain, visible dict: a sender address, a public key, a list of outputs (recipient and amount), a sequential per-sender nonce, a fee, and a signature. Nothing about it is encrypted or hidden.
+A transaction is a plain, visible dict: a sender address, a public key, a list of outputs (recipient and amount), a sequential per-sender nonce, a fee, and a signature, plus an optional short plaintext memo. Nothing about it is encrypted or hidden, the memo included: it is a public note, not a private message.
 
 Nonces are sequential per sender, starting from zero: a transaction's nonce must be exactly one more than the sender's last confirmed nonce. This is the standard replay-protection scheme, the same one Bitcoin-style account models use.
 

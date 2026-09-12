@@ -42,15 +42,41 @@
       <label>Or upload CSV file</label>
       <input type="file" name="csv_file" accept=".csv,.txt">
     </div>
-    <div class="form-group">
-      <label>Fee, in ticks (see the current fee market above; higher fee per byte gets picked up sooner)</label>
-      <input type="number" name="fee" value="0" min="0">
+    <div class="form-row">
+      <label for="fee">Fee, in ticks</label>
+      <input type="number" id="fee" name="fee" value="0" min="0">
+      <span class="stat-sub">See the current fee market above; higher fee per byte gets picked up sooner.</span>
     </div>
-    <div class="form-group">
-      <label>Your signing passphrase</label>
-      <input type="password" name="passphrase" placeholder="Your passphrase to sign the transaction">
+    <div class="form-row">
+      <label for="memo-input">Memo, optional</label>
+      <input type="text" name="memo" id="memo-input" value="{{ memo_value }}"
+             placeholder="What this payment is for">
+      <span class="stat-sub">Plaintext, permanent, visible to everyone; not encrypted.
+        <span id="memo-counter"></span></span>
+    </div>
+    <div class="form-row">
+      <label for="passphrase">Your signing passphrase</label>
+      <input type="password" id="passphrase" name="passphrase" placeholder="Passphrase">
     </div>
     <button type="submit">Sign &amp; Send</button>
   </form>
 </div>
+<script>
+(function () {
+  // Bytes, not characters: the server caps memo by its UTF-8 byte length
+  // (see tx.MAX_MEMO_BYTES), and one emoji or accented character can cost
+  // several bytes, so a character count here would let the field look
+  // fine and still get rejected on submit.
+  const max = {{ memo_max_bytes }};
+  const input = document.getElementById("memo-input");
+  const counter = document.getElementById("memo-counter");
+  function refresh() {
+    const bytes = new TextEncoder().encode(input.value).length;
+    counter.textContent = bytes + " / " + max + " bytes";
+    counter.style.color = bytes > max ? "var(--red, #c0392b)" : "var(--muted)";
+  }
+  input.addEventListener("input", refresh);
+  refresh();
+})();
+</script>
 {% endblock %}

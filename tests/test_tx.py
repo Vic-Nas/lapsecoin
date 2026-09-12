@@ -200,6 +200,113 @@ class TestValidateFields:
 
 
 # ---------------------------------------------------------------------------
+# 4b. validate, field whitelist and memo
+#
+# Nothing before this ever checked for an *unexpected* field, only that
+# the required ones were present, so a sender could attach an arbitrarily
+# large field under any name and it would validate fine. That made the
+# memo cap below pointless on its own: capping one named field is no
+# defense while any other name is still wide open.
+# ---------------------------------------------------------------------------
+
+class TestValidateFieldWhitelist:
+    def test_unexpected_field_rejected(self):
+        s = fresh_state()
+        seed_balance(s, 0)
+        t = make_tx(0, 1, TICKS_PER_LAPSE, s)
+        t["junk"] = "A" * 5_000_000
+        ok, err = tx_mod.validate(t, s)
+        assert ok is False
+        assert "unexpected field" in err
+
+    def test_memo_field_alone_is_allowed(self):
+        s = fresh_state()
+        seed_balance(s, 0)
+        t = make_tx(0, 1, TICKS_PER_LAPSE, s, memo="thanks for lunch")
+        ok, err = tx_mod.validate(t, s)
+        assert ok is True, err
+
+    def test_no_memo_key_when_blank(self):
+        """create() omits the key entirely rather than storing "", so a
+        transaction built without a memo is byte-for-byte what it always
+        was, unaffected by this feature existing at all."""
+        s = fresh_state()
+        seed_balance(s, 0)
+        t = make_tx(0, 1, TICKS_PER_LAPSE, s)
+        assert "memo" not in t
+
+    def test_memo_over_cap_rejected(self):
+        s = fresh_state()
+        seed_balance(s, 0)
+        t = make_tx(0, 1, TICKS_PER_LAPSE, s, memo="x" * (tx_mod.MAX_MEMO_BYTES + 1))
+        ok, err = tx_mod.validate(t, s)
+        assert ok is False
+        assert "memo exceeds" in err
+
+    def test_memo_exactly_at_cap_allowed(self):
+        s = fresh_state()
+        seed_balance(s, 0)
+        t = make_tx(0, 1, TICKS_PER_LAPSE, s, memo="x" * tx_mod.MAX_MEMO_BYTES)
+        ok, err = tx_mod.validate(t, s)
+        assert ok is True, err
+
+    def test_memo_cap_counts_utf8_bytes_not_characters(self):
+        """A multi-byte character can cost several bytes, so the cap has to
+        be checked after UTF-8 encoding, not against len(memo)."""
+        s = fresh_state()
+        seed_balance(s, 0)
+        # 4 bytes each in UTF-8 (outside the BMP), so this is one
+        # character over the cap in character count but well over it in
+        # the bytes actually being checked.
+        char_count = tx_mod.MAX_MEMO_BYTES // 4 + 1
+        memo = "\U0001F600" * char_count
+        assert char_count < tx_mod.MAX_MEMO_BYTES  # sanity: not over by length alone
+        t = make_tx(0, 1, TICKS_PER_LAPSE, s, memo=memo)
+        ok, err = tx_mod.validate(t, s)
+        assert ok is False
+        assert "memo exceeds" in err
+
+    def test_memo_null_byte_rejected(self):
+        s = fresh_state()
+        seed_balance(s, 0)
+        t = make_tx(0, 1, TICKS_PER_LAPSE, s, memo="hi\x00there")
+        ok, err = tx_mod.validate(t, s)
+        assert ok is False
+        assert "null byte" in err
+
+    def test_non_string_memo_rejected(self):
+        s = fresh_state()
+        seed_balance(s, 0)
+        t = make_tx(0, 1, TICKS_PER_LAPSE, s)
+        t["memo"] = 12345
+        ok, err = tx_mod.validate(t, s)
+        assert ok is False
+        assert "memo must be a string" in err
+
+    def test_outputs_within_cap_allowed(self):
+        s = fresh_state()
+        seed_balance(s, 0)
+        outputs = [{"to": address(1), "amount": 1} for _ in range(tx_mod.MAX_OUTPUTS)]
+        t = make_tx(0, 1, 0, s, outputs_override=outputs)
+        ok, err = tx_mod.validate(t, s)
+        assert ok is True, err
+
+    def test_too_many_outputs_rejected(self):
+        """Count, not just content, has to be bounded: each output only
+        needs a valid address and a positive amount, so a wall of 1-tick
+        outputs costs almost nothing in real balance while still bloating
+        the transaction, unlike the whitelist above this doesn't defend
+        against."""
+        s = fresh_state()
+        seed_balance(s, 0)
+        outputs = [{"to": address(1), "amount": 1} for _ in range(tx_mod.MAX_OUTPUTS + 1)]
+        t = make_tx(0, 1, 0, s, outputs_override=outputs)
+        ok, err = tx_mod.validate(t, s)
+        assert ok is False
+        assert "too many outputs" in err
+
+
+# ---------------------------------------------------------------------------
 # 5. validate, signature check
 # ---------------------------------------------------------------------------
 

@@ -60,6 +60,7 @@ def make_tx(
     fee: int = 0,
     outputs_override: list | None = None,
     nonce_override: int | None = None,
+    memo: str = "",
 ):
     """Build and sign a minimal valid plaintext transaction."""
     sk, _ = keypair(sender_index)
@@ -72,7 +73,7 @@ def make_tx(
 
     outputs = outputs_override or [{"to": to_addr, "amount": amount}]
 
-    return tx_mod.create(from_addr, pk_hex, outputs, nonce, fee, sk)
+    return tx_mod.create(from_addr, pk_hex, outputs, nonce, fee, sk, memo=memo)
 
 
 # ---------------------------------------------------------------------------

@@ -44,7 +44,9 @@ Public app  (default port 8333, externally reachable):
     POST /api/tx/send                 rate-limited: 20 requests/second
          Request body (JSON): a signed plaintext tx dict, see tx.py
          (tx_mod.create): {"from", "pubkey", "outputs", "nonce", "fee",
-         "signature"}
+         "signature", "memo"?}
+         memo is optional, plaintext, at most tx.MAX_MEMO_BYTES bytes;
+         omit the key entirely rather than sending an empty string
          Response:
            {"ok": true,  "tx_hash": <hex>}
            {"ok": false, "error": <string>}
@@ -510,12 +512,13 @@ def _default_send_outputs(pool):
     return "\n".join(lines)
 
 
-def _submit_and_alert(node, outputs, fee, passphrase, ctx):
+def _submit_and_alert(node, outputs, fee, passphrase, ctx, memo=""):
     if not passphrase:
         ctx["alert_err"] = "Passphrase required."
         return
     try:
-        t, _fee = node.build_and_sign_tx(outputs, fee=fee, passphrase=passphrase or None)
+        t, _fee = node.build_and_sign_tx(outputs, fee=fee, passphrase=passphrase or None,
+                                          memo=memo)
         ok, result = node.submit_tx_from_api(t)
         if ok:
             ctx["alert_ok_tx"]   = result
@@ -1065,6 +1068,7 @@ def create_private_app(node, pool, private_port=8335, public_port=8333,
                    balance=v.state.get_balance(node.addr),
                    fees=fee_estimate(node), csrf_token=csrf_token,
                    outputs_value=_default_send_outputs(pool),
+                   memo_value="", memo_max_bytes=tx_mod.MAX_MEMO_BYTES,
                    alert_ok_tx="", alert_ok_verb="", alert_err="", alert_err_lines=[])
         if request.method == "POST":
             if not secrets.compare_digest(request.form.get("csrf_token", ""), csrf_token):
@@ -1073,10 +1077,12 @@ def create_private_app(node, pool, private_port=8335, public_port=8333,
             outputs_raw = request.form.get("outputs", "").strip()
             fee_raw     = request.form.get("fee", "0").strip()
             passphrase  = request.form.get("passphrase", "").strip()
+            memo        = request.form.get("memo", "").strip()
             csv_file    = request.files.get("csv_file")
             if csv_file and csv_file.filename:
                 outputs_raw = csv_file.read().decode()
             ctx["outputs_value"] = outputs_raw
+            ctx["memo_value"] = memo
             outputs, errors = _parse_csv_outputs(outputs_raw)
             try:
                 fee = int(fee_raw or "0")
@@ -1085,15 +1091,18 @@ def create_private_app(node, pool, private_port=8335, public_port=8333,
             except ValueError:
                 errors.append("Fee must be a non-negative integer.")
                 fee = 0
+            if len(memo.encode("utf-8")) > tx_mod.MAX_MEMO_BYTES:
+                errors.append(f"Memo exceeds {tx_mod.MAX_MEMO_BYTES} bytes.")
             if errors:
                 ctx["alert_err_lines"] = errors
             elif not outputs:
                 ctx["alert_err"] = "No valid outputs."
             else:
-                _submit_and_alert(node, outputs, fee, passphrase, ctx)
+                _submit_and_alert(node, outputs, fee, passphrase, ctx, memo=memo)
                 if ctx["alert_ok_tx"]:
                     ctx["alert_ok_verb"] = "Sent."
                     ctx["outputs_value"] = ""
+                    ctx["memo_value"] = ""
         return render_template("send.html", **ctx)
 
     @app.route("/api/peers/add", methods=["POST"])

@@ -112,8 +112,17 @@ BLOCK_COMPRESS_LEVEL = 1
 # Bump both when the wire changes incompatibly, and delete the old format
 # in the same commit. A peer below the floor is not partially supported;
 # it is not peered with, and it needs to update.
-PROTOCOL_VERSION     = 2
-MIN_PROTOCOL_VERSION = 2
+#
+# Also bump for a validation rule that tightens rather than the wire
+# format itself: rejecting a transaction shape every earlier version
+# accepted (tx.py's field whitelist and its output-count cap being the
+# case this floor moved to 3 for) is the same risk in a different place.
+# An old node would still accept a block a new one refuses, which is
+# exactly the condition that forks a chain in two; gating it here means
+# it's only relied on once the handshake already guarantees every peer
+# enforces it.
+PROTOCOL_VERSION     = 3
+MIN_PROTOCOL_VERSION = 3
 
 MAX_CHUNK_SIZE   = 1400   # bytes, safe below MTU
 RECV_TIMEOUT     = 2.0    # seconds select/recvfrom timeout

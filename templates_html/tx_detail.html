@@ -8,6 +8,7 @@
     <tr><td>From</td><td class="hash-short" style="word-break:break-all">{{ tx.from }}</td></tr>
     <tr><td>Nonce</td><td>{{ tx.nonce }}</td></tr>
     <tr><td>Fee</td><td>{{ tx.fee }}</td></tr>
+    {% if tx.memo %}<tr><td>Memo</td><td style="word-break:break-word">{{ tx.memo }}</td></tr>{% endif %}
   </table>
 </div>
 <div class="card">

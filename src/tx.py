@@ -12,8 +12,11 @@ import crypto
 from crypto import canonical_json
 
 
-def create(from_addr, pubkey_hex, outputs, nonce, fee, secret_key_bytes):
-    """Build and sign a transaction. Returns tx dict with signature."""
+def create(from_addr, pubkey_hex, outputs, nonce, fee, secret_key_bytes, memo=""):
+    """Build and sign a transaction. Returns tx dict with signature.
+
+    memo is omitted entirely when blank, not stored as an empty string, so
+    a transaction built without one is byte-for-byte what it always was."""
     tx = {
         "from":    from_addr,
         "pubkey":  pubkey_hex,
@@ -21,6 +24,8 @@ def create(from_addr, pubkey_hex, outputs, nonce, fee, secret_key_bytes):
         "nonce":   nonce,
         "fee":     fee,
     }
+    if memo:
+        tx["memo"] = memo
     msg = crypto.serialize_for_signing(tx)
     sig = crypto.sign(msg, secret_key_bytes)
     tx["signature"] = sig.hex()
@@ -65,14 +70,49 @@ def tx_size_in_block(tx_dict, position=0):
 
 _REQUIRED_FIELDS = ["from", "pubkey", "outputs", "nonce", "fee", "signature"]
 
+# Every field a transaction is allowed to carry, required or not. Anything
+# else is rejected outright: without this, a sender could name an
+# arbitrary field ("junk": "A"*5_000_000) and it would validate fine, since
+# nothing here ever checked for an unexpected key, only that the required
+# ones were present. That made every required field's own bound (an
+# address's fixed word count, a signature's fixed byte length, ...)
+# beside the point, since the hole wasn't in any of them.
+#
+# This is a stricter rule than every earlier version of this file enforced
+# (an old node accepts what a new one now refuses), so it ships gated
+# behind the same protocol floor as the memo field it exists to make mean
+# something: relied on only once the handshake already guarantees every
+# peer enforces it, never silently.
+_OPTIONAL_FIELDS = {"memo"}
+_ALLOWED_FIELDS  = set(_REQUIRED_FIELDS) | _OPTIONAL_FIELDS
+
+# A short note, not a payload: about a tweet's length, plaintext, visible
+# to everyone forever like the rest of the transaction. See the module
+# docstring for why this isn't encrypted.
+MAX_MEMO_BYTES = 200
+
+# Outputs are the one required field whose *count* was still unbounded
+# even with the whitelist above: each entry only needs a valid address and
+# a positive amount, so a wall of 1-tick outputs costs almost nothing in
+# real balance while still bloating the transaction. Set well above what
+# the send page can ever prefill (one row per known peer, capped at
+# params.MAX_PEERS = 125) so an honest "pay everyone I know" transaction
+# is never the thing this rejects.
+MAX_OUTPUTS = 500
+
 
 def _check_fields_and_outputs(tx_dict):
+    unexpected = set(tx_dict) - _ALLOWED_FIELDS
+    if unexpected:
+        return False, f"unexpected field(s): {sorted(unexpected)}"
     for field in _REQUIRED_FIELDS:
         if field not in tx_dict:
             return False, f"missing field: {field}"
     outputs = tx_dict["outputs"]
     if not isinstance(outputs, list) or not outputs:
         return False, "outputs must be a non-empty list"
+    if len(outputs) > MAX_OUTPUTS:
+        return False, f"too many outputs: {len(outputs)} > {MAX_OUTPUTS}"
     for out in outputs:
         if "to" not in out or "amount" not in out:
             return False, "each output must have 'to' and 'amount'"
@@ -85,6 +125,14 @@ def _check_fields_and_outputs(tx_dict):
         return False, "fee must be a non-negative integer"
     if not isinstance(tx_dict["nonce"], int):
         return False, "nonce must be an integer"
+    if "memo" in tx_dict:
+        memo = tx_dict["memo"]
+        if not isinstance(memo, str):
+            return False, "memo must be a string"
+        if "\x00" in memo:
+            return False, "memo must not contain a null byte"
+        if len(memo.encode("utf-8")) > MAX_MEMO_BYTES:
+            return False, f"memo exceeds {MAX_MEMO_BYTES} bytes"
     return True, None
 
 

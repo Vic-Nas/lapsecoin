@@ -530,19 +530,21 @@ class Node:
         except queue.Empty:
             return False, "node busy (timeout)"
 
-    def build_and_sign_tx(self, to_outputs, fee=0, passphrase=None):
+    def build_and_sign_tx(self, to_outputs, fee=0, passphrase=None, memo=""):
         """Build, sign, and return a plaintext transaction from this node's
         own address. fee is sender-chosen (default 0; callers building a
-        wallet UI should let the user pick a competitive fee)."""
+        wallet UI should let the user pick a competitive fee). memo is an
+        optional short plaintext note, see tx.MAX_MEMO_BYTES; it is public
+        and permanent like the rest of the transaction, not encrypted."""
         if not passphrase:
             raise ValueError("passphrase is required to sign a transaction")
         kek = crypto.derive_kek(self.keyfile, passphrase)
         try:
-            return self._build_and_sign_tx_with_kek(to_outputs, fee, kek)
+            return self._build_and_sign_tx_with_kek(to_outputs, fee, kek, memo)
         finally:
             del kek
 
-    def build_and_sign_tx_internal(self, to_outputs, fee=0):
+    def build_and_sign_tx_internal(self, to_outputs, fee=0, memo=""):
         """Same as build_and_sign_tx, but for background node-internal
         callers (e.g. the uptime rewarder) that run inside this same
         process while the node is up, reuses the kek already resident in
@@ -553,15 +555,15 @@ class Node:
         passphrase would give the passphrase-based path."""
         if self._kek is None:
             raise ValueError("node is not running (no signing key resident)")
-        return self._build_and_sign_tx_with_kek(to_outputs, fee, self._kek)
+        return self._build_and_sign_tx_with_kek(to_outputs, fee, self._kek, memo)
 
-    def _build_and_sign_tx_with_kek(self, to_outputs, fee, kek):
+    def _build_and_sign_tx_with_kek(self, to_outputs, fee, kek, memo=""):
         v         = self.view
         committed = v.state.get_nonce(self.addr)
         pending   = self.mempool.pending_nonce(self.addr)
         nonce     = max(committed, pending) + 1
         sk = crypto.decrypt_secret_key(self.keyfile, kek=kek)
-        t  = tx_mod.create(self.addr, self.pk_hex, to_outputs, nonce, fee, sk)
+        t  = tx_mod.create(self.addr, self.pk_hex, to_outputs, nonce, fee, sk, memo=memo)
         del sk
         return t, fee
 
