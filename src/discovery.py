@@ -131,9 +131,14 @@ class Discovery:
         self._flush_candidates()
         self.udp.broadcast_discover()
 
+        # ses is None when libtorrent isn't installed (_dht.start already
+        # logged why). alert_event still works as a plain 1s-timeout sleep
+        # in that case, nothing ever sets it early, so it's left
+        # unconditional below; every actual call into ses is guarded.
         ses, my_slot, my_offset = self._dht.start()
         alert_event = threading.Event()
-        ses.set_alert_notify(alert_event.set)
+        if ses is not None:
+            ses.set_alert_notify(alert_event.set)
 
         # When we receive PUNCH_GO, ping the target immediately while the hole is open
         def _on_punch_go(addr):
@@ -143,7 +148,8 @@ class Discovery:
         self.udp.set_punch_go_callback(_on_punch_go)
         self.udp._on_peer_hint = self.enqueue_candidate
 
-        log.info("[dht] started, bootstrapping")
+        if ses is not None:
+            log.info("[dht] started, bootstrapping")
         # Seed our external address early so PINGs we send include "from" field.
         # This lets NAT-loopback peers send PONG to our real IP instead of the
         # hairpinned source address.
@@ -161,7 +167,8 @@ class Discovery:
         # the very first DHT lookup land sooner instead of on the next
         # periodic retry a minute later.
         bootstrap_deadline = time.monotonic() + DHT_BOOTSTRAP_TIMEOUT
-        while time.monotonic() < bootstrap_deadline and not self._dht.bootstrapped:
+        while (ses is not None and time.monotonic() < bootstrap_deadline
+               and not self._dht.bootstrapped):
             alert_event.wait(timeout=1)
             alert_event.clear()
             self._dht.process_alerts(ses)
@@ -177,15 +184,17 @@ class Discovery:
         last_lan      = now - LAN_BROADCAST_INTERVAL
         last_status   = now - STATUS_LOG_INTERVAL
 
-        self._dht.get_all(ses, my_slot)
-        self._dht.torrent_get_peers(ses)
-        self._dht.torrent_announce(ses)   # own cadence, see TORRENT_ANNOUNCE_INTERVAL
+        if ses is not None:
+            self._dht.get_all(ses, my_slot)
+            self._dht.torrent_get_peers(ses)
+            self._dht.torrent_announce(ses)   # own cadence, see TORRENT_ANNOUNCE_INTERVAL
         last_get = time.monotonic()
 
         while True:
             alert_event.wait(timeout=1)
             alert_event.clear()
-            self._dht.process_alerts(ses)
+            if ses is not None:
+                self._dht.process_alerts(ses)
 
             now    = time.monotonic()
             at_max = self.pool.count() >= self.pool._max_peers
@@ -195,13 +204,13 @@ class Discovery:
                 last_flush = now
 
             get_interval = 300 if at_max else GET_INTERVAL
-            if now - last_get >= get_interval:
+            if ses is not None and now - last_get >= get_interval:
                 self._dht.get_all(ses, my_slot)
                 self._dht.torrent_get_peers(ses)
                 last_get = now
 
 
-            if now - last_put >= PUT_REFRESH_INTERVAL:
+            if ses is not None and now - last_put >= PUT_REFRESH_INTERVAL:
                 # Use external addr learned from PONG, or fall back to ipify
                 ext = self.udp.our_external_addr
                 if not ext:
@@ -211,7 +220,7 @@ class Discovery:
                     self._dht.put(ses, my_slot, my_addr)
                 last_put = now
 
-            if now - last_announce >= TORRENT_ANNOUNCE_INTERVAL:
+            if ses is not None and now - last_announce >= TORRENT_ANNOUNCE_INTERVAL:
                 self._dht.torrent_announce(ses)
                 last_announce = now
 
@@ -231,7 +240,8 @@ class Discovery:
 
             if now - last_save >= SAVE_INTERVAL:
                 self._save_peer_cache()
-                self._dht.save_state(ses)
+                if ses is not None:
+                    self._dht.save_state(ses)
                 last_save = now
 
     # ------------------------------------------------------------------

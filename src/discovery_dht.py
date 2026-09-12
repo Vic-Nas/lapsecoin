@@ -49,9 +49,24 @@ class DHTDiscovery:
     # ------------------------------------------------------------------
 
     def start(self):
-        """Create and return the libtorrent session.
+        """Create and return the libtorrent session, or None if libtorrent
+        isn't installed. DHT discovery is one of several ways to find
+        peers, not the only one (see Discovery.run: LAN broadcast, the
+        peer cache, and manually-added/bootstrap peers all work without
+        it), so a missing optional C++ dependency should cost DHT
+        discovery specifically, not the whole discovery thread. The
+        caller (Discovery.run) checks for None once and skips every other
+        method here entirely rather than calling into a session that
+        doesn't exist.
+
         Also returns (my_slot, my_offset) for the caller's timing loop.
         """
+        if lt is None:
+            log.warning("[dht] libtorrent not installed: DHT peer discovery "
+                        "is unavailable, this node still finds peers via "
+                        "LAN broadcast, its saved peer cache, and any "
+                        "peers given on the command line")
+            return None, 0, 0
         ses = self._make_session()
         my_slot   = self._my_slot_index()   if self.node_pubkey_hex else 0
         my_offset = self._my_write_offset() if self.node_pubkey_hex else 0

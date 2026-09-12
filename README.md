@@ -45,6 +45,8 @@ Requires Python 3.11+ and native build dependencies for your platform (liboqs, c
 pip install -r requirements.txt
 python main.py
 ```
+
+Optionally, `pip install libtorrent>=2.0.0` too, for DHT-based peer discovery. It's a C extension with real wheel gaps on some platforms (Windows in particular, where a new Python release regularly goes months without one), so it's left out of the required list rather than blocking the rest of the install; without it this node still finds peers via LAN broadcast, its saved peer cache, and any peer given on the command line.
 </details>
 
 <details>
@@ -141,6 +143,7 @@ Node-local settings live on the private wallet UI under **Settings**, and each c
 - Python 3.11+
 - chiavdf (VDF computation and verification)
 - liboqs-python (FALCON-512 signatures)
+- libtorrent (optional, DHT peer discovery; see "Running from source" above)
 - See `requirements.txt` for the full list
 </details>
 
