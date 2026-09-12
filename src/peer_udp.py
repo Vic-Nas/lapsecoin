@@ -113,16 +113,22 @@ BLOCK_COMPRESS_LEVEL = 1
 # in the same commit. A peer below the floor is not partially supported;
 # it is not peered with, and it needs to update.
 #
-# Also bump for a validation rule that tightens rather than the wire
-# format itself: rejecting a transaction shape every earlier version
-# accepted (tx.py's field whitelist and its output-count cap being the
-# case this floor moved to 3 for) is the same risk in a different place.
-# An old node would still accept a block a new one refuses, which is
-# exactly the condition that forks a chain in two; gating it here means
-# it's only relied on once the handshake already guarantees every peer
-# enforces it.
-PROTOCOL_VERSION     = 3
-MIN_PROTOCOL_VERSION = 3
+# NOT for a validation rule that only tightens what this node itself
+# accepts (tx.py's field whitelist and output-count cap, the case that
+# briefly moved this to 3): that protection lives entirely in
+# tx.validate()/block.validate(), runs regardless of what any peer's
+# version is, and isn't weakened by this number at all. Bumping the
+# floor for it anyway meant refusing to peer with anyone still on the
+# old code at all, over a shape of transaction nobody had actually
+# sent, which found the immediate real cost (two live nodes cut off from
+# each other) trading against a purely speculative future one (a fork
+# that only happens once someone crafts that transaction). A real floor
+# bump is still the right tool for an actual wire-format change, or once
+# a validation tightening's fork risk is no longer speculative; it
+# should be its own deliberate, announced step then, not folded silently
+# into an unrelated feature commit the way this one was.
+PROTOCOL_VERSION     = 2
+MIN_PROTOCOL_VERSION = 2
 
 MAX_CHUNK_SIZE   = 1400   # bytes, safe below MTU
 RECV_TIMEOUT     = 2.0    # seconds select/recvfrom timeout
