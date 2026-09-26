@@ -1,32 +1,27 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="card">
-  <div class="card-title" style="display:flex;justify-content:space-between;align-items:baseline;gap:.75rem">
-    <span id="peers-count">{{ peer_count }} known peer{{ "s" if peer_count != 1 }}</span>
+  <div class="card-title" style="display:flex;justify-content:space-between;align-items:baseline;gap:.75rem;flex-wrap:wrap">
+    <div style="display:flex;align-items:baseline;gap:.9rem;flex-wrap:wrap">
+      <span id="peers-count">{{ peer_count }} known peer{{ "s" if peer_count != 1 }}</span>
+      <!-- Each of these doubles as the legend: the color is the same one
+           the graph itself draws that state in (see nodeColor()), so
+           there's nothing a separate swatch-and-label row would say that
+           the number itself doesn't already say by being that color.
+           Starts hidden and stays that way at 0 -- an empty bucket is the
+           common, healthy case, not something worth a permanent line. -->
+      <span id="net-stat-trusted-wrap" class="net-inline-stat" style="display:none">
+        <span id="net-stat-trusted" style="color:#3ecf8e"></span> trusted</span>
+      <span id="net-stat-cooldown-wrap" class="net-inline-stat" style="display:none">
+        <span id="net-stat-cooldown" style="color:#7a7466"></span> cooldown</span>
+      <span id="net-stat-seen-wrap" class="net-inline-stat" style="display:none">
+        <span id="net-stat-seen" style="color:#7a8290"></span> seen, not held</span>
+      <span class="net-inline-stat">tip <span id="net-stat-height"></span></span>
+    </div>
     <a class="btn-sm" href="/api/peers/download" download="lapsecoin_peers.json">Download JSON</a>
   </div>
+  {% if is_private %}
   <div class="stats" style="margin-bottom:.5rem">
-    <div class="stat stat-trio">
-      <div class="stat-group">
-        <div>
-          <div class="stat-label">Trusted</div>
-          <div class="stat-value" style="color:var(--green)" id="net-stat-trusted">&nbsp;</div>
-        </div>
-        <div>
-          <div class="stat-label">Cooldown</div>
-          <div class="stat-value" id="net-stat-cooldown">&nbsp;</div>
-        </div>
-        <div>
-          <div class="stat-label">Seen, not held</div>
-          <div class="stat-value" id="net-stat-seen">&nbsp;</div>
-        </div>
-        <div>
-          <div class="stat-label">Tip height</div>
-          <div class="stat-value" id="net-stat-height">&nbsp;</div>
-        </div>
-      </div>
-    </div>
-    {% if is_private %}
     <div class="stat" style="flex:1 1 260px">
       <div class="stat-label">Add a peer manually</div>
       <form id="add-peer-form" style="display:flex;gap:.4rem;flex-wrap:wrap;align-items:center;margin-top:.15rem">
@@ -36,26 +31,14 @@
       </form>
       <div id="add-peer-msg" style="font-size:.78rem;margin-top:.25rem"></div>
     </div>
-    {% endif %}
   </div>
+  {% endif %}
   <div id="topology" class="topology"></div>
-  <div class="topo-legend">
-    <span class="topo-legend-item"><span class="topo-swatch" style="background:#b35a0c"></span>you</span>
-    <span class="topo-legend-item"><span class="topo-swatch" style="background:#2f7a4f"></span>trusted</span>
-    <span class="topo-legend-item"><span class="topo-swatch" style="background:#b9b29b"></span>cooldown</span>
-    <span class="topo-legend-item"><span class="topo-swatch" style="background:#e0912f"></span>connecting</span>
-    <span class="topo-legend-item"><span class="topo-swatch topo-swatch-hollow"></span>seen, not held</span>
-    <details class="topo-details">
-      <summary>details</summary>
-      This is only what this node itself has seen: who it's connected to, and who those peers have
-      mentioned but it hasn't reached itself (the faint dots). Updates live as that changes.
-    </details>
-  </div>
 </div>
 
 <style>
   .topology {
-    height: 340px; margin: .6rem 0 .5rem;
+    height: 420px; margin: .6rem 0 .5rem;
     border: 1px solid var(--rule-lt);
     overflow: hidden;
     /* Dark on purpose, deliberately breaking from the page's paper theme
@@ -65,22 +48,7 @@
        (Obsidian's graph view chief among them) runs dark. */
     background: #14181c;
   }
-  .topo-legend {
-    display: flex; flex-wrap: wrap; gap: .3rem 1.1rem;
-    font-size: .74rem; color: var(--muted); align-items: center;
-  }
-  .topo-legend-item { display: inline-flex; align-items: center; gap: .35rem; }
-  .topo-swatch {
-    width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto;
-    display: inline-block;
-  }
-  .topo-swatch-hollow {
-    background: rgba(185,178,155,.35); border: 1px solid var(--rule-lt);
-  }
-  .topo-details { margin-left: auto; cursor: pointer; }
-  .topo-details summary { color: var(--link); list-style: none; }
-  .topo-details summary::-webkit-details-marker { display: none; }
-  .topo-details[open] summary { margin-bottom: .3rem; }
+  .net-inline-stat { font-size: .85rem; color: var(--muted); }
 </style>
 <script src="/vendor/force-graph.min.js"></script>
 <script>
@@ -396,6 +364,15 @@
     }
   }
 
+  // The number itself is the legend (see the card-title markup): shown
+  // in the same color the graph draws that state in, and only shown at
+  // all once it's actually nonzero, an empty bucket being the common,
+  // uninteresting case.
+  function setInlineStat(id, value) {
+    document.getElementById(id).textContent = value;
+    document.getElementById(id + "-wrap").style.display = value ? "" : "none";
+  }
+
   function renderTopology(self, peers, claims, attempting) {
     if (!graph) initTopology();
     structureChanged = false;
@@ -492,10 +469,10 @@
 
     const trusted  = peers.filter(p => p.active).length;
     const cooldown = peers.length - trusted;
-    document.getElementById("net-stat-trusted").textContent  = trusted;
-    document.getElementById("net-stat-cooldown").textContent = cooldown;
-    document.getElementById("net-stat-seen").textContent     = unheldSeen.size;
-    document.getElementById("net-stat-height").textContent   = self.height;
+    setInlineStat("net-stat-trusted", trusted);
+    setInlineStat("net-stat-cooldown", cooldown);
+    setInlineStat("net-stat-seen", unheldSeen.size);
+    document.getElementById("net-stat-height").textContent = self.height;
   }
 
   const statusEl = document.getElementById("live-status");
