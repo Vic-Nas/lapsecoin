@@ -227,8 +227,25 @@ SHOW_HARDWARE_DETAILS = Setting(
          "whoever's looking at it.",
 )
 
+# A node whose odds of winning any given height are 0% (see block.race_odds)
+# spends a full VDF evaluation every cycle to learn nothing it didn't
+# already know. This lets it skip building entirely while that holds,
+# still fully validating and syncing every block it receives -- the same
+# thing a non-mining Bitcoin node already does -- and pick building back up
+# on its own the moment its odds move off 0%, no restart required. Checked
+# live every cycle like every other setting here, not just at startup.
+NO_MINING = Setting(
+    "no_mining", False, bool,
+    label="Pause block building while odds are 0% (sync only)",
+    help="Skips computing this node's own VDF candidate whenever its odds "
+         "of winning the next block are 0%, resuming automatically once "
+         "they aren't. This node still fully validates and syncs every "
+         "block either way; only the (otherwise wasted) attempt to build "
+         "one itself is skipped.",
+)
+
 ALL = [DRAW_WINDOW_SECONDS, SWAP_CONFIRM_DEPTH, SWAP_AUTO_ACCEPT_MIN_TRUST,
-       SHOW_HARDWARE_DETAILS]
+       SHOW_HARDWARE_DETAILS, NO_MINING]
 
 
 # How long a value read from storage is reused before going back to the

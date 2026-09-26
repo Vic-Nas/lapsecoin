@@ -578,11 +578,12 @@ class TestSettingsValidation:
 
     def test_slider_metadata_reaches_the_page(self):
         """The three numeric settings render a slider (a range input);
-        show_hardware_details, a bool, renders a switch, not a slider."""
+        the bool settings (show_hardware_details, no_mining) render a
+        switch each, not a slider."""
         client, _ = self._client()
         html = client.get("/settings").get_data(as_text=True)
         assert html.count('type="range"') == 3
-        assert html.count('class="switch"') == 1
+        assert html.count('class="switch"') == 2
 
 
 class TestAddressLookupBurnAlias:
