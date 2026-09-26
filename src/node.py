@@ -559,6 +559,66 @@ class Node:
             return
         self._commit(winner, relay=relay)
 
+    def _wait_for_field_or_own_pace(self, cs, pre_cycle_blocks):
+        """Used only when this cycle's own odds are a measured 0% (see
+        _run_cycle): rather than either blindly building anyway (paying
+        for a real evaluation the field, if still active, almost
+        certainly beats) or refusing to build until told otherwise by
+        data only a real block can supply (the deadlock a pre-emptive
+        skip used to risk, see git history), wait roughly as long as
+        this node's own build would actually take -- own_vdf_median(),
+        not an arbitrary constant, and not a claim from anyone else --
+        watching for any block to land, from anyone.
+
+        A node whose odds are 0% is, by what that number means, slower
+        than whatever's currently winning; if the field that made it so
+        is still active, it has every reason to finish well within that
+        same stretch, so a real block landing here is the expected,
+        common outcome. Only if the network stays completely silent for
+        about that whole time is it worth treating as real evidence
+        this node had a chance, since nobody else, at any pace, managed
+        one either.
+
+        Costs no VDF computation either way, only a plain wait, so
+        guessing wrong here (the field was just a little slower this
+        one round, not gone) has lost nothing. The one real build this
+        can lead to afterward is bounded to this single height, not a
+        standing switch to unconditional mining, and is itself still
+        subject to _should_abandon like any other.
+
+        Returns True if the height settled from a peer during the wait
+        (the caller should stop, same as a normal cycle would).
+        Returns False if it stayed silent for the whole window (the
+        caller should fall through and build for real).
+        """
+        accumulated_blocks = []
+
+        def _settle():
+            if not accumulated_blocks:
+                return False
+            winner, relay = self._pick_winner(cs, None, accumulated_blocks)
+            if winner is None:
+                return False
+            self._commit(winner, relay=relay)
+            return True
+
+        for blk in pre_cycle_blocks:
+            self._consider_inbound_block(blk, cs, accumulated_blocks)
+        if _settle():
+            return True
+
+        deadline = time.monotonic() + (self.own_vdf_median() or 0)
+        while self.running and self.cs is cs and time.monotonic() < deadline:
+            self._retry_unconfirmed_spreads()
+            for blk in self._drain_queue(timeout=1):
+                self._consider_inbound_block(blk, cs, accumulated_blocks)
+            if _settle():
+                return True
+            if self._sync_if_triggered():
+                return True
+
+        return self.cs is not cs   # a sync/sibling adopted one without us noticing above
+
     def own_block_time_ratio(self):
         """This node's own median VDF build time as a ratio of the chain's
         own recent median block-to-block time (block_mod's
@@ -747,16 +807,30 @@ class Node:
             self._run_cycle_paused(cs, pre_cycle_blocks)
             return
 
-        # No pre-emptive odds check here on purpose: _should_abandon
-        # already does this job, live, per real competitor, instead of
-        # off a windowed estimate that can only ever be as fresh as the
-        # last block anyone actually built -- a node whose odds have
-        # genuinely gone to zero because the field left keeps computing
-        # that estimate off a chain that stopped advancing right along
-        # with the reason to trust it. Starting a build and cancelling
-        # it early once a real competitor shows up costs a few seconds,
-        # not the ~120s of the full evaluation, and can never stall the
-        # chain the way skipping the attempt outright could.
+        # A measured 0% (never merely unknown -- see race_odds; a brand
+        # new chain or this node's own first-ever height returns None,
+        # not 0, and must build normally, or nobody would ever build the
+        # first block) doesn't skip building outright: that risks a
+        # deadlock if the field it's measured against genuinely leaves,
+        # since the only thing that would ever update a stale-0% window
+        # is a block nobody paused on it is willing to attempt. Instead
+        # it waits roughly this node's own known build time -- honest,
+        # local, nothing to spoof -- watching for any real block. One
+        # landing means the field is still there and faster, the
+        # expected case; total silence for that whole stretch is itself
+        # real evidence this node had a chance, so it builds for real.
+        # See _wait_for_field_or_own_pace.
+        window = self.settings.get(settings_mod.DRAW_WINDOW_SECONDS)
+        race = block_mod.race_odds(cs.chain, self.own_vdf_median(), self.addr, window)
+        if race is not None and race["odds_pct"] == 0:
+            self.status_line = (f"waiting  (block {cs.height + 1}, odds are 0%, "
+                                f"watching before building)")
+            if self._wait_for_field_or_own_pace(cs, pre_cycle_blocks):
+                return
+            log.info("[vdf] odds were 0%% but nothing landed in ~%.0fs, "
+                     "building anyway", self.own_vdf_median() or 0)
+            pre_cycle_blocks = []   # already consumed by the wait above
+
         self.status_line = f"computing VDF for block {cs.height + 1}"
 
         # Run VDF in a background thread so the node loop stays responsive

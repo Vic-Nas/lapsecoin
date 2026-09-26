@@ -1379,6 +1379,72 @@ class TestMiningEnabled:
 
 
 # ---------------------------------------------------------------------------
+# 16c. Waiting out a measured 0% before building anyway
+# (Node._wait_for_field_or_own_pace)
+# ---------------------------------------------------------------------------
+
+class TestWaitForFieldOrOwnPace:
+    """Mining is on, but this cycle's odds are a measured 0%: neither
+    blindly build (wasting a real evaluation the field probably still
+    beats) nor refuse to build until told otherwise by data only a real
+    block can supply (the deadlock a straight pre-emptive skip risked).
+    Wait roughly this node's own known build time, watching for any
+    block; settle from one if it lands, build for real if nothing does."""
+
+    def test_a_peer_block_during_the_wait_settles_without_building(
+        self, node_env, monkeypatch
+    ):
+        node, *_, net_q = node_env
+        node._own_build_seconds.append(0.05)   # short wait for the test
+        monkeypatch.setattr(node_mod.block_mod, "race_odds",
+                            lambda *a, **kw: {"odds_pct": 0.0})
+        g = node.cs.tip
+        peer_blk = make_block(g["height"] + 1, g["hash"], [], builder_index=1)
+        net_q.put({"type": "block", "block": peer_blk, "sender": "9.9.9.9:1"})
+        commit_spy = MagicMock()
+        monkeypatch.setattr(node, "_commit", commit_spy)
+        evaluate_spy = MagicMock(return_value=("aa" * 100, "bb" * 100, 0.05))
+        monkeypatch.setattr(node_mod.vdf_mod, "evaluate", evaluate_spy)
+
+        node._run_cycle()
+
+        evaluate_spy.assert_not_called()
+        commit_spy.assert_called_once()
+        assert commit_spy.call_args.args[0]["hash"] == peer_blk["hash"]
+        assert "waiting" in node.status_line
+
+    def test_total_silence_falls_through_to_a_real_build(self, node_env, monkeypatch):
+        """Nobody, at any pace, produced a block during this node's own
+        build-time window: that silence is itself the evidence, so it
+        builds for real rather than waiting forever on data that
+        requires someone else to act."""
+        node, *_ = node_env
+        node._own_build_seconds.append(0.05)   # short wait for the test
+        monkeypatch.setattr(node_mod.block_mod, "race_odds",
+                            lambda *a, **kw: {"odds_pct": 0.0})
+        evaluate_spy = MagicMock(return_value=("aa" * 100, "bb" * 100, 0.05))
+        monkeypatch.setattr(node_mod.vdf_mod, "evaluate", evaluate_spy)
+
+        node._run_cycle()
+
+        evaluate_spy.assert_called()
+
+    def test_no_window_yet_is_not_treated_as_zero(self, node_env, monkeypatch):
+        """The deadlock case: a fresh node_env's chain has no race window
+        yet (race_odds returns None, the real function, not mocked
+        here), and that must build normally rather than waiting, or no
+        node could ever build the first block after genesis."""
+        node, *_ = node_env
+        node._own_build_seconds.append(0.05)
+        evaluate_spy = MagicMock(return_value=("aa" * 100, "bb" * 100, 0.05))
+        monkeypatch.setattr(node_mod.vdf_mod, "evaluate", evaluate_spy)
+
+        node._run_cycle()
+
+        evaluate_spy.assert_called()
+
+
+# ---------------------------------------------------------------------------
 # 17. Rework: an item that never comes back gets re-sent
 # ---------------------------------------------------------------------------
 

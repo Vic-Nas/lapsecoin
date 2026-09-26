@@ -233,14 +233,17 @@ SHOW_HARDWARE_DETAILS = Setting(
 # non-mining Bitcoin node already does. Checked live every cycle like every
 # other setting here, not just at startup.
 #
-# A build that can't win isn't wasted the way it might look: _should_abandon
-# already cancels one early, cheaply, the moment a real competitor's
-# candidate shows up and the math says it can't land in time. That is a
-# live, per-height decision made from an actual signal (a competing
-# candidate genuinely on the network right now), which is a better position
-# to decide from than trying to pre-judge it from a windowed historical
-# estimate that can only ever be as fresh as the last block anyone actually
-# built, so this setting doesn't try to duplicate that job.
+# Separately, and not something this setting controls: a height whose odds
+# are a measured 0% (see block.race_odds) doesn't build immediately either,
+# but it isn't skipped outright, which risked a real deadlock if the field
+# it was measured against genuinely left (nothing would ever refresh that
+# stale reading). Instead it waits roughly this node's own known build
+# time -- honest, local, nothing to spoof -- watching for any real block;
+# see Node._wait_for_field_or_own_pace. One landing means the field's still
+# there, the expected case; total silence for that whole stretch is itself
+# evidence this node had a chance, so it builds for real. Either way,
+# nothing here is ever left permanently unable to build the way an
+# unconditional skip could.
 MINING_ENABLED = Setting(
     "mining_enabled", True, bool,
     label="Mine blocks",
