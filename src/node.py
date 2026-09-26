@@ -162,14 +162,14 @@ ECHO_MIN_SECONDS       = 2.0
 # and "[vdf] proof ready", which reads as hung rather than working.
 VDF_HEARTBEAT_INTERVAL_SECONDS = 30
 
-# How long a no-mining, 0%-odds cycle accumulates peer candidates before
+# How long a mining-disabled cycle accumulates peer candidates before
 # settling the height, in place of waiting on its own VDF future (see
 # _run_cycle_paused). Comparable to a real draw window rather than tied to
 # it: settling early on too few entrants is already tolerated everywhere
 # else in this file (_pick_winner has no minimum wait either), and a
 # later, better sibling still displaces an early pick via _reorg_to_sibling
-# regardless. This is really just how promptly a paused node re-checks
-# settings/odds and turning no-mining off (or odds moving) takes effect.
+# regardless. This is really just how promptly a paused node re-checks the
+# setting and turning mining back on takes effect.
 NO_MINING_POLL_INTERVAL_SECONDS = 20
 
 # Recent-state cache: lets a shallow reorg resume from an already-computed
@@ -520,76 +520,14 @@ class Node:
             log.debug("[vdf] calibration failed, "
                       "build-time estimates unavailable", exc_info=True)
 
-    def _current_odds_pct(self, cs):
-        """This node's odds_pct per block_mod.race_odds, for no-mining
-        mode's 0%-vs-not decision.
-
-        Needs a real own_vdf_median, not just the short calibration
-        sample: a node that has never completed a full build
-        (own_vdf_is_estimate() true, or no measurement at all) triggers
-        one genuine full-length evaluation first, see
-        _calibrate_vdf_full. That is exactly the node this decision
-        matters most for -- _should_abandon's own docstring already
-        notes that a node too slow for the field never finishes a real
-        cycle, so it never gets a real sample on its own, and the short,
-        linearly-extrapolated calibration sample is not a substitute for
-        actually measuring it once when what is being decided is whether
-        to stop attempting real cycles altogether.
-        """
-        if self.own_vdf_median() is None or self.own_vdf_is_estimate():
-            self._calibrate_vdf_full(cs)
-        window = self.settings.get(settings_mod.DRAW_WINDOW_SECONDS)
-        race = block_mod.race_odds(cs.chain, self.own_vdf_median(), self.addr, window)
-        if race is None:
-            return None
-        return race["odds_pct"]
-
-    def _calibrate_vdf_full(self, cs):
-        """Run one real, full-length VDF evaluation purely to measure this
-        machine's real build time, for a node that has never completed
-        one itself. See _current_odds_pct for why an extrapolated sample
-        isn't good enough for this one decision: thermal throttling and
-        OS scheduling contention over a genuine ~120s run are real
-        confounds a few-second sample can't see.
-
-        Runs in a background thread like every other evaluation in this
-        file, draining and syncing while it waits so the node stays
-        responsive; not part of any height's draw, so nothing here
-        touches accumulated_blocks or gets committed anywhere. Only ever
-        runs once: the moment _own_build_seconds has a real entry,
-        own_vdf_is_estimate() goes false and _current_odds_pct stops
-        calling this.
-        """
-        import concurrent.futures as _cf
-        iterations = block_mod.get_vdf_iterations(cs.chain)
-        challenge = crypto.sha256(b"lapsecoin-vdf-calibration")
-        log.info("[vdf] no real build time measured yet; running one full "
-                 "evaluation (~%ds) to calibrate before deciding no-mining odds",
-                 self._estimated_build_seconds() or 0)
-        try:
-            with _cf.ThreadPoolExecutor(max_workers=1) as _pool:
-                _fut = _pool.submit(vdf_mod.evaluate, challenge, iterations)
-                while not _fut.done() and self.running and self.cs is cs:
-                    self._retry_unconfirmed_spreads()
-                    self._drain_queue(timeout=1)
-                    self._sync_if_triggered()
-                if not _fut.done():
-                    return   # stopping, or a sync moved the tip; next call retries
-                _out, _proof, seconds = _fut.result()
-            self._own_build_seconds.append(seconds)
-            self._save_own_build_seconds()
-            log.info("[vdf] one real build for calibration took %.0fs", seconds)
-        except Exception:
-            log.debug("[vdf] full calibration failed", exc_info=True)
-
     def _run_cycle_paused(self, cs, pre_cycle_blocks):
-        """No-mining mode with 0% odds: never submit a candidate of our
-        own this cycle, just validate and accumulate whatever peers
-        produce, then settle the height exactly the same way a normal
-        cycle already does when its own build gets cancelled (see
-        _run_cycle's own_cancelled branch) -- reusing that settlement
-        path rather than inventing a second one. The only difference
-        here is there was never a candidate of our own to begin with.
+        """Mining disabled: never submit a candidate of our own this
+        cycle, just validate and accumulate whatever peers produce, then
+        settle the height exactly the same way a normal cycle already
+        does when its own build gets cancelled (see _run_cycle's
+        own_cancelled branch) -- reusing that settlement path rather
+        than inventing a second one. The only difference here is there
+        was never a candidate of our own to begin with.
 
         Still a fully validating, fully syncing node throughout: the
         same thing a non-mining Bitcoin node already is. Bounded by
@@ -804,16 +742,21 @@ class Node:
             log.warning("[vdf] no peers: building alone, this chain reaches "
                         "nobody until one is found")
 
-        if self.settings.get(settings_mod.NO_MINING):
-            odds_pct = self._current_odds_pct(cs)
-            if not odds_pct:   # None (no window yet) or 0.0
-                self.status_line = f"syncing only  (block {cs.height + 1}, odds are 0%)"
-                self._run_cycle_paused(cs, pre_cycle_blocks)
-                return
-            # Odds are non-zero: fall through and build for real this cycle,
-            # same as if no-mining were off. Re-checked every cycle, so this
-            # can flip back the moment the field's pace (or ours) changes.
+        if not self.settings.get(settings_mod.MINING_ENABLED):
+            self.status_line = f"syncing only  (block {cs.height + 1}, mining is off)"
+            self._run_cycle_paused(cs, pre_cycle_blocks)
+            return
 
+        # No pre-emptive odds check here on purpose: _should_abandon
+        # already does this job, live, per real competitor, instead of
+        # off a windowed estimate that can only ever be as fresh as the
+        # last block anyone actually built -- a node whose odds have
+        # genuinely gone to zero because the field left keeps computing
+        # that estimate off a chain that stopped advancing right along
+        # with the reason to trust it. Starting a build and cancelling
+        # it early once a real competitor shows up costs a few seconds,
+        # not the ~120s of the full evaluation, and can never stall the
+        # chain the way skipping the attempt outright could.
         self.status_line = f"computing VDF for block {cs.height + 1}"
 
         # Run VDF in a background thread so the node loop stays responsive

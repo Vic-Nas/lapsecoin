@@ -6,11 +6,10 @@
   <p>Not enough chain history yet, check back after a few blocks.</p>
 </div>
 {% else %}
-{% if no_mining and not race.odds_pct %}
+{% if not mining_enabled %}
 <div class="card" style="border-color:var(--rule);color:var(--muted)">
-  Not building right now &mdash; no-mining mode is on and odds are 0%. Still fully
-  validating and syncing every block; resumes building on its own the
-  moment odds move off 0%. Turn off in <a href="/settings">Settings</a>.
+  Not building right now &mdash; mining is off. Still fully validating and
+  syncing every block. Turn on in <a href="/settings">Settings</a>.
 </div>
 {% endif %}
 <div class="stats">

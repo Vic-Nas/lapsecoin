@@ -1314,19 +1314,27 @@ class TestRunCycleSync:
 
 
 # ---------------------------------------------------------------------------
-# 16b. No-mining mode (settings_mod.NO_MINING)
+# 16b. Mining on/off (settings_mod.MINING_ENABLED)
 # ---------------------------------------------------------------------------
 
-class TestNoMining:
-    def _enable(self, monkeypatch):
-        monkeypatch.setenv("LAPSECOIN_NO_MINING", "true")
+class TestMiningEnabled:
+    """Just an on/off preference, on by default. Whether a *particular*
+    attempt is worth making is _should_abandon's job, unchanged, live,
+    per real competitor: it cancels a build early and cheaply the moment
+    a competing candidate shows up and the math says it can't land, which
+    is a better position to decide from than a windowed historical
+    estimate ever could be, so this setting doesn't try to duplicate
+    that job -- see settings_mod.MINING_ENABLED's own comment."""
+
+    def _short_pause_interval(self, monkeypatch):
         # The pause branch's own wait loop, not the VDF build loop: keep it
-        # short so a 0%-odds test doesn't cost NO_MINING_POLL_INTERVAL_SECONDS
-        # (20s) of real wall-clock, same reasoning as the VDF heartbeat tests
-        # above monkeypatching that interval down.
+        # short so a mining-disabled test doesn't cost
+        # NO_MINING_POLL_INTERVAL_SECONDS (20s) of real wall-clock, same
+        # reasoning as the VDF heartbeat tests above monkeypatching that
+        # interval down.
         monkeypatch.setattr(node_mod, "NO_MINING_POLL_INTERVAL_SECONDS", 0.05)
 
-    def test_off_by_default_builds_normally(self, node_env, monkeypatch):
+    def test_on_by_default_builds_normally(self, node_env, monkeypatch):
         node, *_ = node_env
         evaluate_spy = MagicMock(return_value=("aa" * 100, "bb" * 100, 0.05))
         monkeypatch.setattr(node_mod.vdf_mod, "evaluate", evaluate_spy)
@@ -1335,16 +1343,10 @@ class TestNoMining:
 
         evaluate_spy.assert_called()
 
-    def test_zero_odds_skips_building(self, node_env, monkeypatch):
-        """A brand-new node's chain has no race window yet, so
-        race_odds returns None, which the pause branch treats the same
-        as an explicit 0%: nothing to build for until there's a real
-        basis to say otherwise."""
-        self._enable(monkeypatch)
+    def test_disabled_skips_building(self, node_env, monkeypatch):
         node, *_ = node_env
-        # A real own_vdf_median so _current_odds_pct doesn't also trigger
-        # _calibrate_vdf_full here; that path gets its own test below.
-        node._own_build_seconds.append(1.0)
+        self._short_pause_interval(monkeypatch)
+        monkeypatch.setenv("LAPSECOIN_MINING_ENABLED", "false")
         evaluate_spy = MagicMock(return_value=("aa" * 100, "bb" * 100, 0.05))
         monkeypatch.setattr(node_mod.vdf_mod, "evaluate", evaluate_spy)
 
@@ -1352,27 +1354,15 @@ class TestNoMining:
 
         evaluate_spy.assert_not_called()
         assert "syncing only" in node.status_line
+        assert "mining is off" in node.status_line
 
-    def test_nonzero_odds_builds_normally(self, node_env, monkeypatch):
-        self._enable(monkeypatch)
-        node, *_ = node_env
-        node._own_build_seconds.append(1.0)
-        monkeypatch.setattr(node_mod.block_mod, "race_odds",
-                            lambda *a, **kw: {"odds_pct": 50.0})
-        evaluate_spy = MagicMock(return_value=("aa" * 100, "bb" * 100, 0.05))
-        monkeypatch.setattr(node_mod.vdf_mod, "evaluate", evaluate_spy)
-
-        node._run_cycle()
-
-        evaluate_spy.assert_called()
-
-    def test_paused_still_settles_from_a_peer_candidate(self, node_env, monkeypatch):
-        """Odds are 0%, so this node builds nothing of its own, but it
+    def test_disabled_still_settles_from_a_peer_candidate(self, node_env, monkeypatch):
+        """Mining is off, so this node builds nothing of its own, but it
         must still be a fully validating, fully syncing node: a peer's
         block for the height still gets adopted."""
-        self._enable(monkeypatch)
         node, *_, net_q = node_env
-        node._own_build_seconds.append(1.0)
+        self._short_pause_interval(monkeypatch)
+        monkeypatch.setenv("LAPSECOIN_MINING_ENABLED", "false")
         g = node.cs.tip
         peer_blk = make_block(g["height"] + 1, g["hash"], [], builder_index=1)
         net_q.put({"type": "block", "block": peer_blk, "sender": "9.9.9.9:1"})
@@ -1386,33 +1376,6 @@ class TestNoMining:
         evaluate_spy.assert_not_called()
         commit_spy.assert_called_once()
         assert commit_spy.call_args.args[0]["hash"] == peer_blk["hash"]
-
-    def test_no_real_measurement_triggers_one_full_calibration_build(
-        self, node_env, monkeypatch
-    ):
-        """own_vdf_median() is None here (no completed builds, no short
-        calibration sample either): _current_odds_pct must run one real
-        full-length evaluation rather than deciding blind, and that
-        evaluation's result must land in _own_build_seconds exactly like
-        a real completed build would, not just update the extrapolated
-        per-iteration rate the short calibration uses."""
-        self._enable(monkeypatch)
-        node, *_ = node_env
-        assert node.own_vdf_median() is None
-        full_iterations = block_mod.get_vdf_iterations(node.cs.chain)
-        seen_iterations = []
-
-        def fake_evaluate(challenge, iterations, handle=None):
-            seen_iterations.append(iterations)
-            return "aa" * 100, "bb" * 100, 1.23
-
-        monkeypatch.setattr(node_mod.vdf_mod, "evaluate", fake_evaluate)
-
-        node._run_cycle()
-
-        assert seen_iterations == [full_iterations]
-        assert list(node._own_build_seconds) == [1.23]
-        assert node.own_vdf_is_estimate() is False
 
 
 # ---------------------------------------------------------------------------

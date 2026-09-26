@@ -248,11 +248,11 @@ class TestOddsPage:
         """The surface /odds and /api/odds touch, and nothing else."""
 
         def __init__(self, is_estimate, own_blocks=True, own_median=90.0,
-                    no_mining=False):
+                    mining_enabled=True):
             self.addr = address(0)
             self.settings = settings_mod.Settings(_MemoryMeta())
-            if no_mining:
-                self.settings.set(settings_mod.NO_MINING, True)
+            if not mining_enabled:
+                self.settings.set(settings_mod.MINING_ENABLED, False)
             # Height 1 is ours at 120s, height 2 is somebody else's at
             # 200s, so there is a field to compare against and a win share
             # to show. own_blocks=False hands height 1 to a third party,
@@ -277,8 +277,8 @@ class TestOddsPage:
             return {"deepest": 0, "count": 0}
 
     def _client(self, is_estimate, own_blocks=True, own_median=90.0,
-               no_mining=False):
-        node = self._OddsNode(is_estimate, own_blocks, own_median, no_mining)
+               mining_enabled=True):
+        node = self._OddsNode(is_estimate, own_blocks, own_median, mining_enabled)
         return api.create_private_app(node, peerpool_mod.PeerPool()).test_client()
 
     def _sub(self, html):
@@ -324,28 +324,15 @@ class TestOddsPage:
         assert data["draw_window"] == 10.0
         assert data["odds_pct"] == 100.0
 
-    def test_no_mining_banner_shows_only_at_zero_odds(self):
-        # own_blocks=False so own_pace falls back to own_median (see
-        # race_odds: it prefers a real block of ours in the window when
-        # one exists, ignoring own_seconds entirely); 500s is far outside
-        # the 10s window from either field entry (120s, 200s), so this
-        # node is never in the draw at all.
-        html = self._client(False, own_blocks=False, own_median=500.0,
-                            no_mining=True).get("/odds").get_data(as_text=True)
-        data = self._client(False, own_blocks=False, own_median=500.0,
-                            no_mining=True).get("/api/odds").get_json()
-        assert data["odds_pct"] == 0.0
-        assert "no-mining mode is on and odds are 0%" in html
-        assert data["no_mining"] is True
+    def test_banner_absent_when_mining_is_on(self):
+        html = self._client(False).get("/odds").get_data(as_text=True)
+        assert "Not building right now" not in html
 
-    def test_no_mining_banner_absent_when_odds_are_nonzero(self):
-        html = self._client(False, no_mining=True).get("/odds").get_data(as_text=True)
-        assert "no-mining mode is on" not in html
-
-    def test_no_mining_banner_absent_when_setting_is_off(self):
-        html = self._client(False, own_median=500.0, no_mining=False) \
-            .get("/odds").get_data(as_text=True)
-        assert "no-mining mode is on" not in html
+    def test_mining_disabled_banner_shows(self):
+        html = self._client(False, mining_enabled=False).get("/odds").get_data(as_text=True)
+        data = self._client(False, mining_enabled=False).get("/api/odds").get_json()
+        assert data["mining_enabled"] is False
+        assert "mining is off" in html
 
     def test_the_configured_window_is_what_decides_the_draw(self):
         # Same chain, wider window: the rival that was too slow becomes a
@@ -606,7 +593,7 @@ class TestSettingsValidation:
 
     def test_slider_metadata_reaches_the_page(self):
         """The three numeric settings render a slider (a range input);
-        the bool settings (show_hardware_details, no_mining) render a
+        the bool settings (show_hardware_details, mining_enabled) render a
         switch each, not a slider."""
         client, _ = self._client()
         html = client.get("/settings").get_data(as_text=True)

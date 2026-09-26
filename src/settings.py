@@ -227,25 +227,30 @@ SHOW_HARDWARE_DETAILS = Setting(
          "whoever's looking at it.",
 )
 
-# A node whose odds of winning any given height are 0% (see block.race_odds)
-# spends a full VDF evaluation every cycle to learn nothing it didn't
-# already know. This lets it skip building entirely while that holds,
-# still fully validating and syncing every block it receives -- the same
-# thing a non-mining Bitcoin node already does -- and pick building back up
-# on its own the moment its odds move off 0%, no restart required. Checked
-# live every cycle like every other setting here, not just at startup.
-NO_MINING = Setting(
-    "no_mining", False, bool,
-    label="Pause block building while odds are 0% (sync only)",
-    help="Skips computing this node's own VDF candidate whenever its odds "
-         "of winning the next block are 0%, resuming automatically once "
-         "they aren't. This node still fully validates and syncs every "
-         "block either way; only the (otherwise wasted) attempt to build "
-         "one itself is skipped.",
+# Whether this node attempts to build its own blocks at all. On by default;
+# turning it off skips building entirely, at every height, while this node
+# still fully validates and syncs every block either way, the same thing a
+# non-mining Bitcoin node already does. Checked live every cycle like every
+# other setting here, not just at startup.
+#
+# A build that can't win isn't wasted the way it might look: _should_abandon
+# already cancels one early, cheaply, the moment a real competitor's
+# candidate shows up and the math says it can't land in time. That is a
+# live, per-height decision made from an actual signal (a competing
+# candidate genuinely on the network right now), which is a better position
+# to decide from than trying to pre-judge it from a windowed historical
+# estimate that can only ever be as fresh as the last block anyone actually
+# built, so this setting doesn't try to duplicate that job.
+MINING_ENABLED = Setting(
+    "mining_enabled", True, bool,
+    label="Mine blocks",
+    help="Attempts to build this node's own candidate for each height. On "
+         "by default. Turning this off skips it at every height instead. "
+         "This node fully validates and syncs every block either way.",
 )
 
 ALL = [DRAW_WINDOW_SECONDS, SWAP_CONFIRM_DEPTH, SWAP_AUTO_ACCEPT_MIN_TRUST,
-       SHOW_HARDWARE_DETAILS, NO_MINING]
+       SHOW_HARDWARE_DETAILS, MINING_ENABLED]
 
 
 # How long a value read from storage is reused before going back to the

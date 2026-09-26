@@ -1267,7 +1267,7 @@ def _shared_read_only_routes(app, node, pool, limiter,
                                chart=chart, reorgs=node.reorg_stats(),
                                own_is_estimate=node.own_vdf_is_estimate(),
                                hardware=hardware,
-                               no_mining=node.settings.get(settings_mod.NO_MINING))
+                               mining_enabled=node.settings.get(settings_mod.MINING_ENABLED))
 
     # ---- JSON API (read-only) --------------------------------------------
 
@@ -1293,7 +1293,7 @@ def _shared_read_only_routes(app, node, pool, limiter,
             "field_builders": race["field_builders"],
             "window_len": len(race["window"]), "chart": _race_chart(race),
             "reorgs": node.reorg_stats(),
-            "no_mining": node.settings.get(settings_mod.NO_MINING),
+            "mining_enabled": node.settings.get(settings_mod.MINING_ENABLED),
         })
 
     @app.route("/api/peers", endpoint=pfx+"api_peers")
