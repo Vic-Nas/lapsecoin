@@ -37,8 +37,20 @@
 </div>
 
 <style>
+  /* This page's whole point is the graph; nothing here is meant to be
+     scrolled past to reach more of it, unlike the dashboard/explorer/board
+     pages which have genuinely variable-length content. Scoped to this
+     page only by virtue of living in its own <style> block: each page is
+     a fresh document load, so this never touches any other page. */
+  body { overflow: hidden; }
   .topology {
-    height: 420px; margin: .6rem 0 .5rem;
+    /* JS (sizeTopology) sets the real height once the page has laid out,
+       shrinking the graph to whatever's actually left after the header
+       row and (if present) the add-peer form -- those must never be the
+       thing that gets pushed off-screen by a short window, only the
+       graph shrinks. This is just what shows before that first runs, and
+       a floor if JS is somehow disabled. */
+    height: 420px; min-height: 80px; margin: .6rem 0 .5rem;
     border: 1px solid var(--rule-lt);
     overflow: hidden;
     /* Dark on purpose, deliberately breaking from the page's paper theme
@@ -202,7 +214,31 @@
     drawForkBadge(n, ctx, r, dimmed ? .25 * fade : fade);
   }
 
+  // Shrinks the graph, never the header row or the add-peer form above
+  // it, to whatever vertical room a short window/zoom/split-screen
+  // actually leaves: those controls must never be the thing pushed off
+  // screen (body has overflow:hidden, so anything past the fold would
+  // simply be unreachable), only the graph gives up space for them.
+  // rect.top depends only on the content above the graph, never on the
+  // graph's own current height, so this can't ratchet smaller call over
+  // call the way measuring against a stale height would.
+  function sizeTopology() {
+    const el = document.getElementById("topology");
+    const rect = el.getBoundingClientRect();
+    const available = window.innerHeight - rect.top - 16;
+    // A smaller-but-fully-visible graph beats a clipped one: at a truly
+    // extreme viewport where even 160px doesn't fit above the fold (the
+    // usual floor, kept for the common case so the graph doesn't get
+    // uselessly tiny), shrink further rather than let it overflow, down
+    // to 80px, past which there's nothing meaningful left to show anyway.
+    const floor = Math.min(160, Math.max(80, available));
+    const h = Math.max(floor, Math.min(420, available));
+    el.style.height = h + "px";
+    if (graph) graph.width(el.clientWidth).height(h);
+  }
+
   function initTopology() {
+    sizeTopology();
     const el = document.getElementById("topology");
     graph = ForceGraph()(el)
       .width(el.clientWidth)
@@ -281,7 +317,7 @@
     // worth carrying, so it's gone too; maybeAutoFit is what actually
     // earns its keep here.
     window.addEventListener("resize", () => {
-      graph.width(el.clientWidth).height(el.clientHeight);
+      sizeTopology();
       maybeAutoFit();
     });
   }
@@ -473,6 +509,13 @@
     setInlineStat("net-stat-cooldown", cooldown);
     setInlineStat("net-stat-seen", unheldSeen.size);
     document.getElementById("net-stat-height").textContent = self.height;
+
+    // The header's real height isn't known until the stat wraps above
+    // have been shown or hidden for real data, which only just happened:
+    // re-measure now rather than trusting sizeTopology()'s one call back
+    // in initTopology(), made before any of this, against a header that
+    // was still just its empty/hidden starting state.
+    sizeTopology();
   }
 
   const statusEl = document.getElementById("live-status");
